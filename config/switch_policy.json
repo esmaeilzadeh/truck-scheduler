@@ -1,0 +1,7 @@
+{
+  "budget_sec": 3.0,
+  "threshold_K": 9,
+  "T_cap": null,
+  "safety_margin_steps": 1,
+  "notes": "P95 CP-SAT time <= 3.0s up to K=10; deployed 9 with 1-step margin"
+}

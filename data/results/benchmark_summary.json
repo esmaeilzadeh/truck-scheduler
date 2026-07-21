@@ -1,0 +1,17 @@
+{
+  "greedy": {
+    "mean_obj": 237.5,
+    "mean_time": 0.0002899125003750669,
+    "solved": 10
+  },
+  "alns": {
+    "mean_obj": 220.4,
+    "mean_time": 3.019449881800392,
+    "solved": 10
+  },
+  "cpsat": {
+    "mean_obj": 221.1,
+    "mean_time": 1.892371425899546,
+    "solved": 10
+  }
+}
