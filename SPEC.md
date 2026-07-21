@@ -1,0 +1,555 @@
+# Implementation Specification — External Truck Gate Scheduling
+
+**Status:** Implementable spec (v1)
+**Source problem:** `project-5-trucks-scheduling.md` (the corrected/polished formulation)
+**Goal of this document:** Give a complete, unambiguous, build-ready specification for a
+**3-tier solver** for the gate-scheduling problem, including the exact algorithms,
+the offline hyperparameter-tuning procedure, and the offline tier-switching procedure.
+
+---
+
+## 0. Summary of the decision
+
+The problem is parallel-machine scheduling with release dates and a weighted
+sum-of-start-times objective: \(Pm \mid r_j \mid \sum w_j C_j\) (strongly NP-hard).
+We implement three interchangeable solvers ("tiers") behind one uniform interface:
+
+| Tier | Solver | Role | When used |
+|------|--------|------|-----------|
+| **Tier 1** | **OR-Tools CP-SAT** (exact) | Proven optimum | Small instances (`M+N ≤ τ`) |
+| **Tier 2** | **ALNS** (metaheuristic) | Near-optimal, scalable | Large instances (`M+N > τ`) |
+| **Tier 3** | **Greedy ERD/SPT** (list scheduler) | Baseline **and** warm start for ALNS | Always (internally) |
+
+The **dispatcher** selects Tier 1 vs Tier 2 using a threshold `τ` (and optionally `T`)
+that is fixed **once, offline** by a profiling study (Section 7). At solve time the
+selection is O(1) — no wasted timeout budget.
+
+**Language:** Python 3.10+. **Exact solver:** `ortools` (CP-SAT). **Rationale:** solvers are
+Python-first with C++ cores; ALNS is glue code; analysis/plotting ecosystem is best in Python.
+
+---
+
+## 1. Problem model (authoritative definitions)
+
+### 1.1 Entities
+- `M` outbound deliveries (SSCGD), indexed `i = 1..M`.
+- `N` inbound pickups (SSCPI), indexed `j = 1..N`.
+- Unified set of **operations** `K = M + N`, indexed `k = 0..K-1`.
+  Each operation has: `type ∈ {DELIVERY, PICKUP}`, processing time `p_k = TPG_k`,
+  release time `r_k`, weight `w_k`.
+  - Delivery: `r_k = RDT_i` (default `1`), `w_k = w1`.
+  - Pickup:   `r_k = TSSCPI_j`, `w_k = w2`.
+
+### 1.2 Parameters
+- `T` — number of time periods; constraint `T > max(p_k)`.
+- `G` — number of gates, `G ≥ 1`.
+- `w1, w2 ≥ 0` — objective weights (default `w1 = w2 = 1`).
+
+### 1.3 Decision (solution) representation (canonical, solver-independent)
+A solution assigns to every operation `k`:
+- `start_k ∈ {1, …, T}` — start period.
+- `gate_k ∈ {1, …, G}` — assigned gate.
+
+Occupancy interval is **half-open** `[start_k, start_k + p_k)`; last occupied period is
+`start_k + p_k − 1`.
+
+### 1.4 Constraints
+1. **Release:** `start_k ≥ r_k` for all `k`.
+2. **Horizon:** `start_k + p_k − 1 ≤ T` ⇔ `start_k ≤ T − p_k + 1`.
+3. **Gate non-overlap:** for any two ops `a ≠ b` with `gate_a = gate_b`:
+   `start_a + p_a ≤ start_b` OR `start_b + p_b ≤ start_a`.
+
+### 1.5 Objective
+Minimize
+\[
+\text{Cost} = w_1 \sum_{i} DT_i + w_2 \sum_{j} PT_j = \sum_{k} w_k \cdot start_k .
+\]
+
+### 1.6 Feasibility precheck (run before any solver)
+- `T > max(p_k)`.
+- Workload fits: `sum(p_k) ≤ G · T`. If violated → declare **infeasible**, do not solve.
+- Per-op fits: `r_k + p_k − 1 ≤ T` for every `k`. If any op cannot fit after its
+  release, declare infeasible.
+
+---
+
+## 2. Data formats & I/O contract
+
+### 2.1 Instance JSON (input)
+```json
+{
+  "id": "inst_0001",
+  "T": 48,
+  "G": 3,
+  "w1": 1.0,
+  "w2": 1.0,
+  "deliveries": [ {"id": 0, "p": 3, "rdt": 1} ],
+  "pickups":    [ {"id": 0, "p": 2, "release": 5} ]
+}
+```
+- `rdt` optional (default 1). `release` = `TSSCPI_j` (required for pickups).
+
+### 2.2 Solution JSON (output)
+```json
+{
+  "instance_id": "inst_0001",
+  "solver": "cpsat|alns|greedy",
+  "objective": 123.0,
+  "is_optimal": true,
+  "proven_optimal": true,
+  "runtime_sec": 0.42,
+  "assignments": [
+    {"op_type": "delivery", "op_id": 0, "start": 1, "gate": 1, "p": 3, "weight": 1.0}
+  ],
+  "meta": { "iterations": 0, "gap_pct": 0.0 }
+}
+```
+
+### 2.3 Internal `Operation` / `Instance` / `Solution` structures
+```python
+@dataclass(frozen=True)
+class Operation:
+    uid: int            # 0..K-1 global id
+    kind: str           # "delivery" | "pickup"
+    local_id: int       # i or j
+    p: int              # processing time
+    r: int              # release time
+    w: float            # weight
+
+@dataclass
+class Instance:
+    id: str
+    T: int
+    G: int
+    ops: list[Operation]        # length K
+    w1: float; w2: float
+
+@dataclass
+class Solution:
+    starts: dict[int, int]      # uid -> start
+    gates:  dict[int, int]      # uid -> gate
+    # objective computed on demand; must be feasible before scoring
+```
+
+### 2.4 Validator (shared, mandatory)
+Implement `validate(instance, solution) -> None` that raises on any violation of
+Section 1.4 constraints and horizon/release bounds. **Every** solver's output must
+pass the validator before its objective is trusted. Objective:
+`sum(op.w * solution.starts[op.uid] for op in ops)`.
+
+---
+
+## 3. Module / repo architecture
+
+```
+truck_scheduling/
+  spec.md                      # this file
+  project-5-trucks-scheduling.md
+  README.md
+  requirements.txt             # ortools, numpy, pandas, matplotlib/plotly, streamlit, (optional) numba, irace-py or smac
+  src/
+    model.py                   # dataclasses (Section 2.3), objective, feasibility precheck (1.6)
+    io_utils.py                # instance/solution JSON read/write
+    validate.py                # validator (2.4)
+    instance_gen.py            # random instance generator (Section 6)
+    solvers/
+      base.py                  # Solver interface (3.1)
+      greedy.py                # Tier 3 (Section 4)
+      alns.py                  # Tier 2 (Section 5)
+      cpsat.py                 # Tier 1 (Section 4.? / 4A)
+    dispatch.py                # tier selection at runtime (Section 8)
+    tuning/
+      tune_alns.py             # offline hyperparameter search (Section 6-tuning / 6H)
+      profile_switch.py        # offline tier-threshold study (Section 7)
+    experiments/
+      run_benchmark.py         # compares tiers, produces tables/plots (Section 9)
+    ui/
+      app.py                   # Streamlit UI (Section 10)
+  config/
+    alns_params.json           # tuned hyperparameters (output of tuning)
+    switch_policy.json         # tuned threshold τ (output of profiling)
+  data/
+    instances/                 # generated instances
+    results/                   # solver outputs, benchmark CSVs, plots
+  tests/
+    test_validate.py test_greedy.py test_cpsat_small.py test_alns.py test_dispatch.py
+```
+
+### 3.1 Uniform solver interface
+```python
+class Solver(Protocol):
+    name: str
+    def solve(self, inst: Instance, *, time_limit_sec: float | None = None,
+              seed: int | None = None, warm_start: Solution | None = None) -> Solution: ...
+```
+All three tiers implement this. The dispatcher and experiments depend only on this
+interface, so tiers are interchangeable and directly comparable.
+
+---
+
+## 4. Tier 3 — Greedy ERD/SPT list scheduler (baseline + warm start)
+
+Deterministic, `O(K log K)`. Used both as a reported baseline and as the ALNS/CP-SAT
+warm start.
+
+### 4.1 Algorithm
+```
+sort ops by key (r ascending, then p ascending, then w descending, then uid) -> order
+gate_free[g] = list of occupied intervals per gate (start with empty)
+for k in order:
+    best = None
+    for g in 1..G:
+        t = earliest_start(g, r_k, p_k, T)      # earliest feasible start >= r_k on gate g
+        if t is not None:
+            cost = w_k * t
+            if best is None or (t, g) < best.key:   # minimize start, tie -> lowest gate
+                best = (t, g)
+    if best is None: raise Infeasible
+    assign start_k = best.t, gate_k = best.g
+    insert interval [t, t+p_k) into gate g's interval list
+```
+
+### 4.2 `earliest_start(g, r, p, T)`
+Given sorted non-overlapping intervals on gate `g`, return the smallest `t ≥ r` such
+that `[t, t+p)` fits in a gap and `t ≤ T − p + 1`; else `None`.
+- Scan gaps: before first interval, between consecutive intervals, after last.
+- Candidate `t = max(r, gap_start)`; accept if `t + p ≤ gap_end+1` and `t ≤ T−p+1`.
+
+### 4.3 Variants (for the report / ablation)
+- **ERD-only** (sort by `r` then `uid`).
+- **SPT-within-ready** (event-driven: when a gate frees, pick shortest ready job).
+Provide both `greedy_erd_spt` (default) and `greedy_spt_ready` for comparison.
+
+---
+
+## 4A. Tier 1 — OR-Tools CP-SAT exact solver
+
+### 4A.1 Variables
+For each op `k`:
+- `s_k = NewIntVar(r_k, T − p_k + 1, "s_k")` (start; release & horizon baked into domain).
+- For each gate `g`: presence literal `x[k,g] = NewBoolVar` and an **optional interval**
+  `iv[k,g] = NewOptionalIntervalVar(s_k, p_k, s_k + p_k, x[k,g], "iv")`.
+  (Start var `s_k` is shared across gates so the start is gate-independent.)
+
+### 4A.2 Constraints
+- **Exactly one gate:** `AddExactlyOne(x[k,g] for g in 1..G)` for each `k`.
+- **No overlap per gate:** for each gate `g`: `AddNoOverlap(iv[k,g] for all k)`.
+  (Optional intervals with `presence=False` are ignored automatically.)
+
+### 4A.3 Objective
+`Minimize( sum_k round(w_k * SCALE) * s_k )`, with integer `SCALE` (e.g. 1 if weights
+are integers; else scale to integers, default weights are 1 so `SCALE=1`).
+
+### 4A.4 Solve settings
+- `solver.parameters.max_time_in_seconds = time_limit_sec` (if given).
+- `solver.parameters.num_search_workers = 8` (configurable).
+- Warm start (optional): use `AddHint(s_k, warm.starts[k])` and `AddHint(x[k,gate], 1)`
+  from the greedy solution.
+- Report `proven_optimal = (status == OPTIMAL)`. If `FEASIBLE` only (hit time limit),
+  return best found with `proven_optimal=False`.
+- If `INFEASIBLE` → raise (should have been caught by precheck 1.6).
+
+**Why CP-SAT (not manual Big-M MILP):** native `NoOverlap`/interval primitives map
+directly onto the gate constraint, less code, fewer bugs. (A Big-M or time-indexed MILP
+is documented in the brief and may be added as an optional appendix solver, but is not
+required.)
+
+---
+
+## 5. Tier 2 — Adaptive Large Neighborhood Search (ALNS)
+
+### 5.1 Solution encoding & decoder (order-based)
+A solution is a **permutation** `π` of all `K` operation uids. The **decoder** turns `π`
+into concrete `(start, gate)` via the greedy earliest-start rule of Section 4 applied in
+the order given by `π`:
+```
+decode(π) -> Solution:
+    reset gate interval lists
+    for k in π:
+        place k at earliest feasible start over all gates (as in 4.1/4.2)
+    return Solution + objective
+```
+This guarantees feasibility for any permutation (given the feasibility precheck passed)
+and makes the objective purely a function of the order. ALNS therefore searches over
+orderings.
+
+### 5.2 Initial solution
+`π0 = order produced by Tier-3 greedy ERD/SPT` (Section 4.1). `x_best = x_cur = decode(π0)`.
+
+### 5.3 Destroy operators (remove `q` ops from `π`)
+`q` drawn each iteration uniformly from `[q_min, q_max]` where
+`q_min = max(1, ceil(ρ_min · K))`, `q_max = max(q_min, ceil(ρ_max · K))`.
+1. **Random removal** — remove `q` uniformly random ops.
+2. **Worst removal** — remove the `q` ops with the largest `w_k · start_k` contribution
+   (highest cost first; add small randomization via a `p`-biased selection, exponent `d_wr`).
+3. **Related (Shaw) removal** — pick a seed op, remove the `q−1` most "related" ops, where
+   relatedness `rel(a,b) = α·|r_a − r_b| + β·|p_a − p_b| + γ·[gate_a≠gate_b] + δ·|start_a − start_b|`
+   (smaller = more related). Coefficients are fixed constants (`α=β=1, γ=T/4, δ=1`).
+
+Removed ops go to a "removal bank"; remaining ops keep relative order in `π`.
+
+### 5.4 Repair operators (reinsert removal bank into `π`)
+1. **Greedy insertion** — for each removed op (processed in random order), try inserting at
+   every position in `π`, decode, keep the position with min objective; commit; repeat.
+2. **Regret-k insertion** (`k=2` or `3`) — for each removed op compute the best `k`
+   insertion costs; insert the op with the **largest regret**
+   `sum_{m=2..k}(cost_m − cost_1)` first; repeat until bank empty.
+
+(To keep decode cost manageable, an incremental insertion cost may be approximated by
+inserting into `π` and decoding once per candidate position; `K` is bounded by profiling
+so full re-decode is acceptable. Optimize later with NumPy/Numba if profiling shows a
+bottleneck.)
+
+### 5.5 Adaptive operator selection (Ropke–Pisinger)
+- Maintain weights `ω_i` (destroy) and `ω'_j` (repair), all init `1.0`.
+- Select operator with probability proportional to its weight (roulette).
+- Track per-segment scores. After applying a (destroy, repair) pair, add reward `ψ`:
+  - `ψ = σ1` if new **global best**;
+  - else `ψ = σ2` if better than current;
+  - else `ψ = σ3` if accepted but not better;
+  - else `0`.
+- After every `segment_length` iterations, update each used operator:
+  `ω = (1 − λ)·ω + λ·(accumulated_score / times_used)`, then reset segment scores.
+  `λ` = reaction factor.
+
+### 5.6 Acceptance criterion (Simulated Annealing)
+- Temperature `Temp = Temp0` initially; after each iteration `Temp *= cooling`.
+- Accept candidate `x'` if `obj(x') ≤ obj(x_cur)` OR with prob
+  `exp(−(obj(x') − obj(x_cur)) / Temp)`.
+- `Temp0` set so a solution `start_temp_ctrl` (e.g. 5%) worse than initial is accepted with
+  prob 0.5: `Temp0 = −(0.05 · obj(x0)) / ln(0.5)`.
+- Always update `x_best` when improved.
+
+### 5.7 Stopping criterion
+Stop when **either** `max_iterations` reached **or** `time_limit_sec` elapsed (whichever
+first). Both configurable; the dispatcher passes a time limit.
+
+### 5.8 Reproducibility
+All randomness from a single seeded `random.Random(seed)` / `numpy` Generator. `solve()`
+accepts `seed`. Report `iterations`, final `gap_pct` (vs best known if available).
+
+### 5.9 ALNS hyperparameters (the tunable set)
+| Param | Symbol | Default (lit.) | Search range |
+|-------|--------|----------------|--------------|
+| min destroy fraction | `ρ_min` | 0.10 | [0.05, 0.20] |
+| max destroy fraction | `ρ_max` | 0.40 | [0.20, 0.50] |
+| reaction factor | `λ` | 0.10 | [0.01, 0.5] |
+| segment length | `seg` | 100 | [50, 500] |
+| score: new best | `σ1` | 33 | [10, 50] |
+| score: better | `σ2` | 9 | [5, 25] |
+| score: accepted | `σ3` | 13 | [1, 20] |
+| SA cooling | `cooling` | 0.99975 | [0.995, 0.99999] |
+| SA start-worse accept | `start_temp_ctrl` | 0.05 | [0.01, 0.20] |
+| regret depth | `k` | 3 | {2, 3, 4} |
+| worst-removal bias | `d_wr` | 3 | [1, 6] |
+| max iterations | `max_iterations` | 25000 | fixed per time budget |
+
+Defaults come from Ropke & Pisinger (2006) and are the fallback if no tuning is run.
+
+---
+
+## 6. Instance generator (for tuning & profiling)
+
+`instance_gen.py` produces reproducible random instances:
+```
+gen_instance(seed, M, N, G, T=None, p_range=(1,pmax), rel_frac=0.5, w1=1, w2=1):
+    p_k ~ UniformInt(p_range)
+    T = T or ceil( ( sum(p_k)/G ) * horizon_slack )   # slack e.g. 1.5, ensure T > max p
+    deliveries: rdt = 1 (or Uniform(1, rel_frac*T) if release extension enabled)
+    pickups: release ~ UniformInt(1, max(1, floor(rel_frac*T)))
+    assert feasibility precheck (1.6); regenerate T if needed
+```
+Generate three named suites (all seeded, saved to `data/instances/`):
+- **TUNE suite** — used only to tune ALNS hyperparameters.
+- **TEST suite** — disjoint from TUNE; used for final reported results (never tuned on).
+- **PROFILE suite** — size-sweep grid for the switch study (Section 7).
+
+Sizes span `K = M+N ∈ {5, 10, 15, 20, 25, 30, 40, 60, 100, 200, 400}`, several seeds each,
+varying `G ∈ {1,2,3,5}` and `T` slack. Keep TUNE and TEST disjoint by seed ranges.
+
+---
+
+## 6H. ALNS hyperparameter tuning procedure (offline, one-time)
+
+**This is NOT machine-learning training** — there is no learned model, no labels, and no
+online adaptation persisted. It is offline **algorithm configuration / parameter tuning**.
+ALNS's own operator-weight adaptation (5.5) is ephemeral per run and is not "training".
+
+### 6H.1 Objective of tuning
+Find the hyperparameter vector `θ` (Section 5.9) minimizing the **mean relative gap** over
+the TUNE suite:
+```
+gap(inst, θ, seed) = (obj_ALNS(inst, θ, seed) − ref(inst)) / ref(inst)
+```
+where `ref(inst)` = CP-SAT optimum if the instance is small enough to solve exactly,
+else the best objective found across **all** ALNS configs/seeds on that instance
+(best-known proxy). Score of `θ` = `mean over (inst, seed) of gap`, minimized.
+
+### 6H.2 Method (choose one; both acceptable)
+- **Preferred: automatic configurator** — `irace` (or `SMAC`/`ParamILS`). Provide the
+  parameter space of Section 5.9, the TUNE instances, a per-run time/iteration budget,
+  and let it search. Fix a total tuning budget (e.g. 2000 target runs).
+- **Fallback: random search** — sample `≥200` configs from the ranges, evaluate each on a
+  fixed TUNE subset with `≥3` seeds, keep the best mean gap. (Grid search only if the space
+  is reduced to 2–3 params, e.g. `ρ_max`, `cooling`.)
+
+### 6H.3 Protocol details
+- **Stochasticity:** evaluate every config with `≥3` distinct seeds; average.
+- **Fixed budget per run:** identical `time_limit_sec` (or `max_iterations`) for all configs
+  so comparisons are fair.
+- **Never tune on TEST.** Report final numbers on TEST with the single chosen `θ`.
+- **Output:** write winning `θ` to `config/alns_params.json`; log the full search to
+  `data/results/alns_tuning.csv` for the report.
+- **Effort guidance:** for a course project, seeding with literature defaults (5.9) plus a
+  light random search over `{ρ_max, cooling, seg, λ}` is sufficient; full irace is optional
+  polish and good report material.
+
+---
+
+## 7. Tier-switch determination (offline profiling, one-time)
+
+Goal: fix threshold(s) so that **at test time the tier choice is O(1)** with no wasted
+solve budget. We do **not** run CP-SAT-until-timeout in production.
+
+### 7.1 What we measure (on PROFILE suite)
+For each instance (grouped by `K = M+N`, and secondarily by `T`):
+- CP-SAT: `time_to_proven_optimal` (with a generous cap `C`, e.g. 300 s) and whether it
+  proved optimality within `C`.
+- ALNS: objective and runtime under the production time budget `B`.
+
+### 7.2 Choosing the threshold `τ`
+- Define the **acceptable test-time budget** `B` for exact solving (e.g. `B = 5 s`).
+- For each size `K`, compute the **95th percentile** of CP-SAT solve time across seeds
+  (use a high percentile, not the mean, because same-size instances vary in hardness).
+- `τ = largest K such that P95(CP-SAT solve time at K) ≤ B` **and** CP-SAT proved
+  optimality for (essentially) all instances at that K.
+- Apply a **safety margin**: set the deployed threshold to `τ_deploy = τ − Δ` (e.g. one grid
+  step below the crossover) to reduce risk of a hard small instance blowing the budget.
+
+### 7.3 Optional second feature `T`
+If profiling shows solve time depends strongly on `T` as well as `K`, store a small rule
+table, e.g. `use_exact = (K ≤ τ_deploy) and (T ≤ T_cap)`, choosing `T_cap` the same
+percentile way. Otherwise keep the single-`K` rule (simplest).
+
+### 7.4 Output
+Write to `config/switch_policy.json`:
+```json
+{
+  "budget_sec": 5.0,
+  "threshold_K": 22,
+  "T_cap": null,
+  "safety_margin_steps": 1,
+  "notes": "P95 CP-SAT time <= budget up to K=24; deployed 22 with 1-step margin"
+}
+```
+Also emit the **crossover plot** (CP-SAT vs ALNS runtime & quality vs `K`) to
+`data/results/` for the report.
+
+---
+
+## 8. Runtime dispatcher (production path)
+
+```python
+def solve(inst, policy=load("config/switch_policy.json"),
+          params=load("config/alns_params.json"),
+          exact_time_limit=None, alns_time_limit=None, seed=0):
+    feasibility_precheck(inst)                     # Section 1.6 -> raise if infeasible
+    warm = GreedyERDSPT().solve(inst)              # Tier 3 always (baseline + warm start)
+    K = len(inst.ops)
+    use_exact = (K <= policy.threshold_K) and (policy.T_cap is None or inst.T <= policy.T_cap)
+    if use_exact:
+        sol = CPSAT().solve(inst, time_limit_sec=exact_time_limit, warm_start=warm)
+        # optional guard: if not sol.proven_optimal (hit limit), fall back to ALNS
+        if exact_time_limit is not None and not sol.proven_optimal:
+            sol = ALNS(params).solve(inst, time_limit_sec=alns_time_limit,
+                                     seed=seed, warm_start=warm)
+    else:
+        sol = ALNS(params).solve(inst, time_limit_sec=alns_time_limit,
+                                 seed=seed, warm_start=warm)
+    validate(inst, sol)
+    return best_of(sol, warm)   # never return worse than the greedy baseline
+```
+
+- **Primary decision is O(1)** (size comparison), no timeout paid.
+- The optional guard (`exact_time_limit`) is a safety backstop; disable it for strictly
+  zero test-time waste (accept rare suboptimal calls — note the trade-off in the report).
+- `best_of` ensures the returned solution is never worse than the greedy warm start.
+
+---
+
+## 9. Experiments & reporting (`experiments/run_benchmark.py`)
+
+Produce, on the TEST suite:
+1. **Comparison table** per instance and aggregated: columns `{greedy, alns, cpsat}` ×
+   `{objective, runtime_sec, gap_pct_vs_optimum}`. `gap_pct = (obj − opt)/opt · 100`
+   where `opt` = CP-SAT optimum when available.
+2. **Crossover plot** (from Section 7): runtime vs `K`, CP-SAT vs ALNS (log y-axis).
+3. **ALNS convergence plot**: best objective vs iteration for a few representative instances.
+4. **Ablations** (optional): greedy variants; ALNS with/without each operator; tuned vs
+   default `θ`.
+All outputs to `data/results/` as CSV + PNG/HTML.
+
+---
+
+## 10. UI (`ui/app.py`, Streamlit) — presentation for the teacher
+
+Centerpiece = **color-coded Gantt chart**. Requirements:
+- **Inputs panel:** sliders/fields for `M, N, T, G, w1, w2`, seed; button "Generate";
+  or upload an instance JSON. Button "Solve".
+- **Gantt chart:** Y-axis = gates `1..G`; X-axis = time `1..T`; each op a horizontal bar
+  `[start, start+p)`. **Deliveries and pickups in two distinct colorblind-safe colors**
+  (e.g. blue / orange). Show release markers/shaded "unavailable" region per pickup so
+  release compliance is visually evident. Labels/tooltips: op id, start, p, gate.
+- **Results table:** greedy vs ALNS vs CP-SAT (objective, runtime, gap, proven-optimal).
+- **Which tier fired:** display the dispatcher's choice and why (`K` vs `τ`).
+- **Plots tab:** crossover plot and ALNS convergence.
+- **Live & reproducible:** re-solve on a fresh/random instance on demand; fixed seed field.
+- **Accessibility:** colorblind-safe palette, large fonts for projection, clear legend/units.
+
+Fallback if time is short: a **Jupyter notebook** rendering the same Gantt + table + plots
+(top-to-bottom narrative). Streamlit preferred for live interaction.
+
+---
+
+## 11. Testing (`tests/`)
+
+- `test_validate.py`: hand-built feasible & infeasible solutions → validator accepts/rejects
+  (overlap, release violation, horizon violation).
+- `test_greedy.py`: tiny instances with known schedules; determinism; feasibility.
+- `test_cpsat_small.py`: instances small enough to enumerate/verify optimum; check
+  `proven_optimal` and objective equals brute-force optimum for `K ≤ 8`.
+- `test_alns.py`: ALNS ≤ greedy objective (never worse than warm start); reproducible with
+  fixed seed; feasibility on many random instances.
+- `test_dispatch.py`: dispatcher picks correct tier per policy; returns feasible, never
+  worse than greedy.
+- **Cross-check:** on small instances, `alns.obj ≥ cpsat.obj` (optimum is a lower bound)
+  and `greedy.obj ≥ cpsat.obj`.
+
+---
+
+## 12. Deliverables checklist
+
+- [ ] `src/` with all modules and the uniform `Solver` interface.
+- [ ] Feasibility precheck + shared validator.
+- [ ] Tier 3 greedy (ERD/SPT) + variants.
+- [ ] Tier 1 CP-SAT (optional-interval model, warm start, proven-optimal flag).
+- [ ] Tier 2 ALNS (destroy/repair operators, adaptive weights, SA acceptance, seeds).
+- [ ] `config/alns_params.json` from tuning (Section 6H) + tuning log.
+- [ ] `config/switch_policy.json` from profiling (Section 7) + crossover plot.
+- [ ] Dispatcher (Section 8).
+- [ ] Benchmark + plots (Section 9).
+- [ ] Streamlit UI (or notebook) with Gantt chart (Section 10).
+- [ ] Tests (Section 11), all passing.
+- [ ] README: how to generate instances, tune, profile, run UI, reproduce results.
+
+---
+
+## 13. Defaults if you skip tuning/profiling (safe fallbacks)
+
+- ALNS params: literature defaults in Section 5.9.
+- Switch threshold: `threshold_K = 20`, `T_cap = null`, exact time limit `5 s` with the
+  fall-back guard enabled (so correctness is preserved even without profiling).
+- Weights: `w1 = w2 = 1`.
+
+These make the system runnable end-to-end before the offline studies are done; the studies
+then replace the fallbacks with tuned values and give you report material.

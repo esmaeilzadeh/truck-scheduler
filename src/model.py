@@ -29,6 +29,9 @@ class Instance:
 class Solution:
     starts: dict[int, int]  # uid -> start
     gates: dict[int, int]  # uid -> gate
+    proven_optimal: bool = False
+    runtime_sec: float = 0.0
+    meta: dict | None = None
 
     def objective(self, inst: Instance) -> float:
         """Weighted sum of start times."""
