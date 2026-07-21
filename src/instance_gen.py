@@ -7,6 +7,7 @@ import math
 import random
 from pathlib import Path
 
+from src.io_utils import instance_to_dict
 from src.model import Infeasible, Instance, Operation, feasibility_precheck
 
 
@@ -80,23 +81,7 @@ def gen_instance(
 
 
 def _instance_to_json_dict(inst: Instance) -> dict:
-    return {
-        "id": inst.id,
-        "T": inst.T,
-        "G": inst.G,
-        "w1": inst.w1,
-        "w2": inst.w2,
-        "deliveries": [
-            {"id": op.local_id, "p": op.p, "rdt": op.r}
-            for op in inst.ops
-            if op.kind == "delivery"
-        ],
-        "pickups": [
-            {"id": op.local_id, "p": op.p, "release": op.r}
-            for op in inst.ops
-            if op.kind == "pickup"
-        ],
-    }
+    return instance_to_dict(inst)
 
 
 def generate_suite(

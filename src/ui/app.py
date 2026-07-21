@@ -13,7 +13,7 @@ import streamlit as st
 
 from src.dispatch import solve as dispatch_solve
 from src.instance_gen import gen_instance
-from src.io_utils import _build_operations
+from src.io_utils import _build_operations, instance_to_dict, solution_to_dict
 from src.model import Instance, Solution
 from src.solvers.alns import ALNS
 from src.solvers.cpsat import CPSAT
@@ -149,7 +149,11 @@ def main():
             "CP-SAT": "cpsat",
         }
         force_tier = _algo_to_tier[algo_label]
-        compare_all = st.checkbox("Compare all solvers", value=True)
+        # Side-by-side comparison only applies to Auto; a forced algorithm runs alone.
+        if force_tier == "auto":
+            compare_all = st.checkbox("Compare all solvers", value=False)
+        else:
+            compare_all = False
 
         st.divider()
         uploaded = st.file_uploader("Upload Instance JSON", type=["json"])
@@ -177,13 +181,27 @@ def main():
             w2=w2,
         )
 
+    st.session_state["inst"] = inst
+
     st.subheader(f"Instance: {inst.id}  |  K={len(inst.ops)}, G={inst.G}, T={inst.T}")
+    st.download_button(
+        label="Download instance JSON",
+        data=json.dumps(instance_to_dict(inst), indent=2),
+        file_name=f"{inst.id}.json",
+        mime="application/json",
+        key="download_instance",
+    )
 
     if st.button("Solve", type="primary"):
         results: dict[str, Solution] = {}
         tiers: dict[str, str] = {}
 
-        with st.spinner("Running Dispatcher (primary)..."):
+        spinner_label = (
+            "Running Auto dispatcher..."
+            if force_tier == "auto"
+            else f"Running {algo_label}..."
+        )
+        with st.spinner(spinner_label):
             try:
                 sol_d, tier = dispatch_solve(
                     inst,
@@ -195,11 +213,14 @@ def main():
                 validate(inst, sol_d)
                 results["dispatcher"] = sol_d
                 tiers["dispatcher"] = tier
-                st.success(f"Dispatcher selected tier: **{tier}**")
+                if force_tier == "auto":
+                    st.success(f"Dispatcher selected tier: **{tier}**")
+                else:
+                    st.success(f"Solved with **{tier}**")
             except Exception as e:
-                st.error(f"Dispatcher failed: {e}")
+                st.error(f"Solve failed: {e}")
 
-        if compare_all:
+        if compare_all and force_tier == "auto":
             with st.spinner("Running Greedy..."):
                 g = GreedyERDSPT()
                 sol_g = g.solve(inst)
@@ -222,29 +243,56 @@ def main():
                 except Exception as e:
                     st.warning(f"CP-SAT failed: {e}")
 
-        if results:
-            st.subheader("Results")
-            table_data = []
-            for name, sol in results.items():
-                row = {
-                    "Solver": name,
-                    "Objective": round(sol.objective(inst), 2),
-                    "Runtime (s)": round(sol.runtime_sec, 3),
-                    "Proven Optimal": sol.proven_optimal,
-                    "Tier": tiers.get(name, "—"),
-                }
-                table_data.append(row)
-            st.table(table_data)
+        st.session_state["results"] = results
+        st.session_state["tiers"] = tiers
+        st.session_state["solved_instance_id"] = inst.id
 
-            # Prefer dispatcher Gantt when present
-            gantt_key = "dispatcher" if "dispatcher" in results else min(
-                results, key=lambda n: results[n].objective(inst)
-            )
-            label = gantt_key
-            if gantt_key == "dispatcher":
-                label = f"dispatcher ({tiers.get('dispatcher', '?')})"
-            st.subheader(f"Gantt Chart — {label}")
-            _plot_gantt(inst, results[gantt_key])
+    results = st.session_state.get("results") or {}
+    tiers = st.session_state.get("tiers") or {}
+    solved_id = st.session_state.get("solved_instance_id")
+    has_current_results = bool(results) and solved_id == inst.id
+
+    if has_current_results:
+        st.subheader("Results")
+        table_data = []
+        for name, sol in results.items():
+            row = {
+                "Solver": name,
+                "Objective": round(sol.objective(inst), 2),
+                "Runtime (s)": round(sol.runtime_sec, 3),
+                "Proven Optimal": sol.proven_optimal,
+                "Tier": tiers.get(name, "—"),
+            }
+            table_data.append(row)
+        st.table(table_data)
+
+        gantt_key = "dispatcher" if "dispatcher" in results else min(
+            results, key=lambda n: results[n].objective(inst)
+        )
+        label = gantt_key
+        if gantt_key == "dispatcher":
+            label = f"dispatcher ({tiers.get('dispatcher', '?')})"
+        st.subheader(f"Gantt Chart — {label}")
+        _plot_gantt(inst, results[gantt_key])
+
+        primary = results[gantt_key]
+        solver_name = tiers.get(gantt_key, gantt_key)
+        sol_payload = solution_to_dict(
+            instance_id=inst.id,
+            solver=solver_name,
+            solution=primary,
+            inst=inst,
+            proven_optimal=primary.proven_optimal,
+            runtime_sec=primary.runtime_sec,
+            meta=primary.meta,
+        )
+        st.download_button(
+            label="Download solution JSON",
+            data=json.dumps(sol_payload, indent=2),
+            file_name=f"{inst.id}_solution.json",
+            mime="application/json",
+            key="download_solution",
+        )
     else:
         st.info("Click 'Solve' to generate a schedule.")
 
