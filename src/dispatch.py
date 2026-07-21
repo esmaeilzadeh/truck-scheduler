@@ -49,6 +49,9 @@ def _best_of(sol: Solution, warm: Solution, inst: Instance) -> Solution:
     return sol if obj_sol <= obj_warm else warm
 
 
+_VALID_FORCE_TIERS = frozenset({None, "auto", "greedy", "cpsat", "alns"})
+
+
 def solve(
     inst: Instance,
     policy_path: str | Path | None = "config/switch_policy.json",
@@ -56,6 +59,7 @@ def solve(
     exact_time_limit: float | None = None,
     alns_time_limit: float | None = None,
     seed: int = 0,
+    force_tier: str | None = None,
 ) -> tuple[Solution, str]:
     """Run the dispatcher. Returns (solution, tier_used).
 
@@ -73,12 +77,24 @@ def solve(
         Time limit for ALNS. None → use policy budget_sec.
     seed : int
         Random seed for ALNS.
+    force_tier : str or None
+        None/"auto" → size policy; "greedy" | "cpsat" | "alns" → force that solver.
     """
+    if force_tier not in _VALID_FORCE_TIERS:
+        raise ValueError(
+            f"Unknown force_tier={force_tier!r}; "
+            f"expected one of None, 'auto', 'greedy', 'cpsat', 'alns'"
+        )
+
     feasibility_precheck(inst)
 
     # Tier 3: greedy warm start (always)
     greedy = GreedyERDSPT()
     warm = greedy.solve(inst)
+
+    if force_tier == "greedy":
+        validate(inst, warm)
+        return warm, "greedy"
 
     # Load configs with safe fallbacks
     policy = _load_json(policy_path) or _DEFAULT_SWITCH_POLICY
@@ -93,11 +109,13 @@ def solve(
     if alns_time_limit is None:
         alns_time_limit = budget
 
-    K = len(inst.ops)
-    use_exact = (K <= threshold_K) and (T_cap is None or inst.T <= T_cap)
+    auto = force_tier in (None, "auto")
 
-    tier = ""
-    if use_exact:
+    if force_tier == "cpsat" or (
+        auto
+        and (len(inst.ops) <= threshold_K)
+        and (T_cap is None or inst.T <= T_cap)
+    ):
         from src.solvers.cpsat import CPSAT
 
         cpsat = CPSAT()
@@ -106,8 +124,12 @@ def solve(
             time_limit_sec=exact_time_limit,
             warm_start=warm,
         )
-        # Guard: if not proven optimal, fall back to ALNS
-        if exact_time_limit is not None and not sol.proven_optimal:
+        # Auto only: if not proven optimal, fall back to ALNS
+        if (
+            auto
+            and exact_time_limit is not None
+            and not sol.proven_optimal
+        ):
             from src.solvers.alns import ALNS
 
             alns = ALNS(params=params)
@@ -121,6 +143,7 @@ def solve(
         else:
             tier = "cpsat"
     else:
+        # force_tier == "alns" or auto with K > threshold
         from src.solvers.alns import ALNS
 
         alns = ALNS(params=params)

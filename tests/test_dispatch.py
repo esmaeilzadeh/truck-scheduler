@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from src.dispatch import solve as dispatch_solve
 from src.instance_gen import gen_instance
 from src.solvers.greedy import greedy_erd_spt
@@ -74,3 +76,73 @@ def test_dispatch_fallback_configs():
     )
     validate(inst, sol)
     assert tier in ("cpsat", "alns", "alns_fallback")
+
+
+def test_force_tier_alns_overrides_policy(tmp_path: Path):
+    """Small-K instance would pick CP-SAT under policy; force_tier=alns wins."""
+    policy = {
+        "budget_sec": 5.0,
+        "threshold_K": 20,
+        "T_cap": None,
+        "safety_margin_steps": 1,
+    }
+    policy_path = tmp_path / "switch_policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+
+    inst = gen_instance(seed=0, M=3, N=3, G=2)  # K=6 <= 20
+    sol, tier = dispatch_solve(
+        inst,
+        policy_path=policy_path,
+        params_path=None,
+        exact_time_limit=5.0,
+        alns_time_limit=1.0,
+        seed=0,
+        force_tier="alns",
+    )
+    validate(inst, sol)
+    assert tier == "alns"
+
+
+def test_force_tier_cpsat_no_fallback(tmp_path: Path):
+    """Forced CP-SAT never returns alns_fallback, even if not proven optimal."""
+    policy = {
+        "budget_sec": 0.01,
+        "threshold_K": 20,
+        "T_cap": None,
+        "safety_margin_steps": 1,
+    }
+    policy_path = tmp_path / "switch_policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+
+    inst = gen_instance(seed=2, M=4, N=4, G=2)
+    sol, tier = dispatch_solve(
+        inst,
+        policy_path=policy_path,
+        params_path=None,
+        exact_time_limit=0.01,
+        alns_time_limit=1.0,
+        seed=0,
+        force_tier="cpsat",
+    )
+    validate(inst, sol)
+    assert tier == "cpsat"
+
+
+def test_force_tier_greedy():
+    inst = gen_instance(seed=4, M=3, N=3, G=2)
+    sol, tier = dispatch_solve(
+        inst,
+        policy_path=None,
+        params_path=None,
+        force_tier="greedy",
+    )
+    validate(inst, sol)
+    assert tier == "greedy"
+    g = greedy_erd_spt(inst)
+    assert sol.objective(inst) == pytest.approx(g.objective(inst))
+
+
+def test_force_tier_invalid():
+    inst = gen_instance(seed=5, M=2, N=2, G=1)
+    with pytest.raises(ValueError, match="force_tier"):
+        dispatch_solve(inst, force_tier="bogus")

@@ -137,6 +137,18 @@ def main():
 
         seed = st.number_input("Random Seed", min_value=0, value=42)
         time_limit = st.number_input("Time Limit (s)", min_value=0.1, value=5.0, step=0.5)
+        algo_label = st.selectbox(
+            "Algorithm",
+            ["Auto (policy)", "Greedy", "ALNS", "CP-SAT"],
+            index=0,
+        )
+        _algo_to_tier = {
+            "Auto (policy)": "auto",
+            "Greedy": "greedy",
+            "ALNS": "alns",
+            "CP-SAT": "cpsat",
+        }
+        force_tier = _algo_to_tier[algo_label]
         compare_all = st.checkbox("Compare all solvers", value=True)
 
         st.divider()
@@ -178,6 +190,7 @@ def main():
                     seed=int(seed),
                     exact_time_limit=time_limit,
                     alns_time_limit=time_limit,
+                    force_tier=force_tier,
                 )
                 validate(inst, sol_d)
                 results["dispatcher"] = sol_d
