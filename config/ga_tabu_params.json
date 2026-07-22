@@ -1,0 +1,13 @@
+{
+  "population_size": 30,
+  "elite_count": 2,
+  "tournament_k": 3,
+  "crossover_rate": 0.9,
+  "mutation_rate": 0.2,
+  "max_generations": 3000,
+  "local_search_rate": 0.3,
+  "local_tabu_iters": 80,
+  "local_neighborhood_size": 20,
+  "tabu_tenure": 7,
+  "swap_prob": 0.5
+}

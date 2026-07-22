@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
 import random
@@ -31,8 +32,7 @@ def decode(inst: Instance, order: list[int]) -> Solution:
         t, g = _place_op(op, gate_intervals, inst.G, inst.T)
         starts[uid] = t
         gates[uid] = g
-        gate_intervals[g].append((t, t + op.p))
-        gate_intervals[g].sort()
+        bisect.insort(gate_intervals[g], (t, t + op.p))
 
     return Solution(starts=starts, gates=gates)
 
@@ -47,11 +47,26 @@ def _objective_from_order(inst: Instance, order: list[int]) -> float:
     for uid in order:
         op = ops_by_uid[uid]
         t, g = _place_op(op, gate_intervals, inst.G, inst.T)
-        gate_intervals[g].append((t, t + op.p))
-        gate_intervals[g].sort()
+        bisect.insort(gate_intervals[g], (t, t + op.p))
         total += op.w * t
 
     return total
+
+
+def _deadline_hit(deadline: float | None) -> bool:
+    return deadline is not None and time.perf_counter() >= deadline
+
+
+def _append_remaining_random(
+    order: list[int], remaining: list[int], rng: random.Random,
+) -> list[int]:
+    """Cheap fallback when the time budget expires mid-repair."""
+    out = list(order)
+    bag = list(remaining)
+    rng.shuffle(bag)
+    for uid in bag:
+        out.insert(rng.randint(0, len(out)), uid)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -85,8 +100,7 @@ def _worst_remove(
         op = ops_by_uid[uid]
         t, g = _place_op(op, gate_intervals, inst.G, inst.T)
         temp_starts[uid] = t
-        gate_intervals[g].append((t, t + op.p))
-        gate_intervals[g].sort()
+        bisect.insort(gate_intervals[g], (t, t + op.p))
 
     # Highest cost first (rank 0 = worst)
     cost_list = [(ops_by_uid[uid].w * temp_starts[uid], uid) for uid in order]
@@ -125,8 +139,7 @@ def _related_removal(
         t, g = _place_op(op, gate_intervals, inst.G, inst.T)
         temp_starts[uid] = t
         temp_gates[uid] = g
-        gate_intervals[g].append((t, t + op.p))
-        gate_intervals[g].sort()
+        bisect.insort(gate_intervals[g], (t, t + op.p))
 
     T = inst.T
     alpha, beta, gamma, delta = 1.0, 1.0, T / 4, 1.0
@@ -162,15 +175,22 @@ def _related_removal(
 
 def _greedy_repair(
     remaining: list[int], removed: list[int], rng: random.Random, inst: Instance,
+    deadline: float | None = None,
     **_kwargs,
 ) -> list[int]:
     """Insert each removed op at best position (min objective)."""
     rng.shuffle(removed)
     order = list(remaining)
-    for uid in removed:
+    pending = list(removed)
+    while pending:
+        if _deadline_hit(deadline):
+            return _append_remaining_random(order, pending, rng)
+        uid = pending.pop(0)
         best_pos = 0
         best_cost = float("inf")
         for pos in range(len(order) + 1):
+            if pos % 8 == 0 and _deadline_hit(deadline):
+                return _append_remaining_random(order, [uid] + pending, rng)
             trial = order[:pos] + [uid] + order[pos:]
             cost = _objective_from_order(inst, trial)
             if cost < best_cost:
@@ -182,22 +202,28 @@ def _greedy_repair(
 
 def _regret_k_repair(
     remaining: list[int], removed: list[int], rng: random.Random,
-    inst: Instance, k: int = 3, **_kwargs,
+    inst: Instance, k: int = 3, deadline: float | None = None, **_kwargs,
 ) -> list[int]:
     """Regret-k insertion: insert op with largest regret first."""
-    del rng
     order = list(remaining)
     bank = list(removed)
 
     while bank:
+        if _deadline_hit(deadline):
+            return _append_remaining_random(order, bank, rng)
+
         best_uid = None
         best_regret = -float("inf")
         best_pos = 0
 
         for uid in bank:
+            if _deadline_hit(deadline):
+                return _append_remaining_random(order, bank, rng)
             costs: list[float] = []
             positions: list[int] = []
             for pos in range(len(order) + 1):
+                if pos % 8 == 0 and _deadline_hit(deadline):
+                    return _append_remaining_random(order, bank, rng)
                 trial = order[:pos] + [uid] + order[pos:]
                 cost = _objective_from_order(inst, trial)
                 costs.append(cost)
@@ -242,6 +268,8 @@ DEFAULT_PARAMS = {
     "regret_k": 3,
     "d_wr": 3.0,
     "max_iterations": 25000,
+    # Cap destroy size so one repair stays cheap on large K
+    "q_cap": 12,
 }
 
 DESTROY_OPS = [
@@ -278,6 +306,10 @@ class ALNS:
     params: dict | None = None
     params_path: str | Path | None = None
 
+    def __post_init__(self) -> None:
+        if self.params_path is None:
+            self.params_path = _DEFAULT_PARAMS_PATH
+
     def solve(
         self,
         inst: Instance,
@@ -288,6 +320,9 @@ class ALNS:
     ) -> Solution:
         feasibility_precheck(inst)
         t0 = time.perf_counter()
+        deadline = (
+            t0 + time_limit_sec if time_limit_sec is not None else None
+        )
 
         file_params = _load_params_file(
             Path(self.params_path) if self.params_path else None
@@ -327,14 +362,18 @@ class ALNS:
 
         q_min = max(1, math.ceil(p["rho_min"] * K))
         q_max = max(q_min, math.ceil(p["rho_max"] * K))
+        q_cap = int(p.get("q_cap", 12))
+        if q_cap > 0:
+            q_min = min(q_min, q_cap)
+            q_max = min(q_max, q_cap)
+            q_max = max(q_min, q_max)
 
         max_iter = p["max_iterations"]
         iterations = 0
 
         for it in range(max_iter):
-            if time_limit_sec is not None:
-                if time.perf_counter() - t0 >= time_limit_sec:
-                    break
+            if _deadline_hit(deadline):
+                break
 
             iterations = it + 1
 
@@ -347,7 +386,11 @@ class ALNS:
                 cur_order, q, rng, inst, **destroy_kwargs
             )
 
+            if _deadline_hit(deadline):
+                break
+
             repair_kwargs = {"k": p["regret_k"]} if r_idx == 1 else {}
+            repair_kwargs["deadline"] = deadline
             new_order = REPAIR_OPS[r_idx](
                 remaining, removed, rng, inst, **repair_kwargs
             )

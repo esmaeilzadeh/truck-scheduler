@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import bisect
 import heapq
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from src.model import Infeasible, Instance, Operation, Solution, feasibility_precheck
 
@@ -14,7 +15,10 @@ def earliest_start(
     p: int,
     T: int,
 ) -> int | None:
-    """Smallest t >= r fitting [t, t+p) in a gap on one gate; else None."""
+    """Smallest t >= r fitting [t, t+p) in a gap on one gate; else None.
+
+    ``intervals`` must already be sorted by start time.
+    """
     latest_start = T - p + 1
     if latest_start < r:
         return None
@@ -22,24 +26,22 @@ def earliest_start(
     if not intervals:
         return r if r <= latest_start else None
 
-    sorted_iv = sorted(intervals)
-
     # Gap before first interval
-    gap_end = sorted_iv[0][0]
+    gap_end = intervals[0][0]
     t = max(r, 1)
     if t + p <= gap_end and t <= latest_start:
         return t
 
     # Gaps between consecutive intervals
-    for i in range(len(sorted_iv) - 1):
-        gap_start = sorted_iv[i][1]
-        gap_end = sorted_iv[i + 1][0]
+    for i in range(len(intervals) - 1):
+        gap_start = intervals[i][1]
+        gap_end = intervals[i + 1][0]
         t = max(r, gap_start)
         if t + p <= gap_end and t <= latest_start:
             return t
 
     # Gap after last interval
-    gap_start = sorted_iv[-1][1]
+    gap_start = intervals[-1][1]
     t = max(r, gap_start)
     if t + p <= T + 1 and t <= latest_start:
         return t
@@ -77,8 +79,7 @@ def _decode_order(
         t, g = _place_op(op, gate_intervals, inst.G, inst.T)
         starts[op.uid] = t
         gates[op.uid] = g
-        gate_intervals[g].append((t, t + op.p))
-        gate_intervals[g].sort()
+        bisect.insort(gate_intervals[g], (t, t + op.p))
 
     return Solution(starts=starts, gates=gates)
 
@@ -137,8 +138,7 @@ def greedy_spt_ready(inst: Instance) -> Solution:
                 starts[uid] = t
                 gates[uid] = g
                 finish = t + op.p
-                gate_intervals[g].append((t, finish))
-                gate_intervals[g].sort()
+                bisect.insort(gate_intervals[g], (t, finish))
                 gate_free_at[g] = finish
         else:
             if unscheduled:

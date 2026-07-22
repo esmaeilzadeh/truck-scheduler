@@ -11,7 +11,10 @@ from src.model import Instance, Solution
 from src.solvers.alns import ALNS
 from src.solvers.base import Solver
 from src.solvers.cpsat import CPSAT
+from src.solvers.ga import GeneticAlgorithm
+from src.solvers.ga_tabu import HybridGATabu
 from src.solvers.greedy import GreedyERDSPT
+from src.solvers.tabu import TabuSearch
 from src.validate import validate
 
 
@@ -24,7 +27,14 @@ def run_benchmark(
 ) -> dict:
     """Run all solvers on all instances. Returns results dict."""
     if solvers is None:
-        solvers = [GreedyERDSPT(), ALNS(), CPSAT()]
+        solvers = [
+            GreedyERDSPT(),
+            ALNS(),
+            TabuSearch(),
+            GeneticAlgorithm(),
+            HybridGATabu(),
+            CPSAT(),
+        ]
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     rows: list[dict] = []

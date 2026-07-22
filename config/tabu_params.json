@@ -1,0 +1,6 @@
+{
+  "tabu_tenure": 7,
+  "neighborhood_size": 40,
+  "max_iterations": 20000,
+  "swap_prob": 0.5
+}

@@ -42,3 +42,13 @@ def test_crosscheck_alns_ge_cpsat():
     if c.proven_optimal:
         assert a.objective(inst) >= c.objective(inst) - 1e-9
         assert g.objective(inst) >= c.objective(inst) - 1e-9
+
+
+def test_alns_respects_time_limit_on_large_instance():
+    """Repair used to overrun the budget; keep instance modest for fast CI."""
+    inst = gen_instance(seed=42, M=8, N=7, G=2)
+    limit = 1.0
+    sol = ALNS().solve(inst, time_limit_sec=limit, seed=0)
+    validate(inst, sol)
+    assert sol.runtime_sec <= limit + 0.5
+    assert (sol.meta or {}).get("iterations", 0) >= 1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from src.model import Instance, Solution, feasibility_precheck
@@ -11,6 +12,7 @@ from src.validate import validate
 
 _DEFAULT_SWITCH_POLICY = {
     "budget_sec": 5.0,
+    "cpsat_time_limit_sec": 120.0,
     "threshold_K": 20,
     "T_cap": None,
     "safety_margin_steps": 1,
@@ -42,6 +44,26 @@ def _load_json(path: str | Path | None) -> dict | None:
         return None
 
 
+def load_switch_policy(
+    policy_path: str | Path | None = "config/switch_policy.json",
+) -> dict:
+    """Load switch policy with defaults (used by UI for timeout defaults)."""
+    policy = dict(_DEFAULT_SWITCH_POLICY)
+    loaded = _load_json(policy_path)
+    if loaded:
+        policy.update(loaded)
+    return policy
+
+
+def cpsat_time_limit_from_policy(policy: dict | None = None) -> float:
+    """CP-SAT wall-clock budget from config (default 120s)."""
+    if policy is None:
+        policy = load_switch_policy()
+    if "cpsat_time_limit_sec" in policy and policy["cpsat_time_limit_sec"] is not None:
+        return float(policy["cpsat_time_limit_sec"])
+    return float(policy.get("budget_sec", 120.0))
+
+
 def _best_of(sol: Solution, warm: Solution, inst: Instance) -> Solution:
     """Return the solution with lower objective."""
     obj_sol = sol.objective(inst)
@@ -49,7 +71,9 @@ def _best_of(sol: Solution, warm: Solution, inst: Instance) -> Solution:
     return sol if obj_sol <= obj_warm else warm
 
 
-_VALID_FORCE_TIERS = frozenset({None, "auto", "greedy", "cpsat", "alns"})
+_VALID_FORCE_TIERS = frozenset(
+    {None, "auto", "greedy", "cpsat", "alns", "tabu", "ga", "ga_tabu"}
+)
 
 
 def solve(
@@ -60,6 +84,7 @@ def solve(
     alns_time_limit: float | None = None,
     seed: int = 0,
     force_tier: str | None = None,
+    stop_event: threading.Event | None = None,
 ) -> tuple[Solution, str]:
     """Run the dispatcher. Returns (solution, tier_used).
 
@@ -72,18 +97,23 @@ def solve(
     params_path : path or None
         Path to alns_params.json. None or missing → fallback defaults.
     exact_time_limit : float or None
-        Time limit for CP-SAT. None → use policy budget_sec.
+        Time limit for CP-SAT. None → config ``cpsat_time_limit_sec`` (else budget_sec).
     alns_time_limit : float or None
-        Time limit for ALNS. None → use policy budget_sec.
+        Time limit for ALNS / Tabu / GA / hybrid. None → use policy budget_sec.
     seed : int
-        Random seed for ALNS.
+        Random seed for metaheuristics.
     force_tier : str or None
-        None/"auto" → size policy; "greedy" | "cpsat" | "alns" → force that solver.
+        None/"auto" → size policy;
+        "greedy" | "cpsat" | "alns" | "tabu" | "ga" | "ga_tabu" → force that solver.
+        Auto never selects tabu/ga/ga_tabu.
+    stop_event : threading.Event or None
+        When set, cooperative cancel for CP-SAT (and ignored by greedy).
     """
     if force_tier not in _VALID_FORCE_TIERS:
         raise ValueError(
             f"Unknown force_tier={force_tier!r}; "
-            f"expected one of None, 'auto', 'greedy', 'cpsat', 'alns'"
+            f"expected one of None, 'auto', 'greedy', 'cpsat', 'alns', "
+            f"'tabu', 'ga', 'ga_tabu'"
         )
 
     feasibility_precheck(inst)
@@ -97,15 +127,19 @@ def solve(
         return warm, "greedy"
 
     # Load configs with safe fallbacks
-    policy = _load_json(policy_path) or _DEFAULT_SWITCH_POLICY
+    if policy_path is None:
+        policy = dict(_DEFAULT_SWITCH_POLICY)
+    else:
+        policy = load_switch_policy(policy_path)
     params = _load_json(params_path) or _DEFAULT_ALNS_PARAMS
 
     threshold_K = policy.get("threshold_K", 20)
     T_cap = policy.get("T_cap", None)
-    budget = policy.get("budget_sec", 5.0)
+    budget = float(policy.get("budget_sec", 5.0))
+    cpsat_budget = cpsat_time_limit_from_policy(policy)
 
     if exact_time_limit is None:
-        exact_time_limit = budget
+        exact_time_limit = cpsat_budget
     if alns_time_limit is None:
         alns_time_limit = budget
 
@@ -123,6 +157,7 @@ def solve(
             inst,
             time_limit_sec=exact_time_limit,
             warm_start=warm,
+            stop_event=stop_event,
         )
         # Auto only: if not proven optimal, fall back to ALNS
         if (
@@ -142,6 +177,43 @@ def solve(
             tier = "alns_fallback"
         else:
             tier = "cpsat"
+
+        # Forced CP-SAT: return the CP-SAT incumbent as-is (never swap to greedy
+        # while still labeling the run as cpsat — that looked like an instant
+        # greedy result). Auto/ALNS paths keep the never-worse-than-greedy guard.
+        if force_tier == "cpsat":
+            validate(inst, sol)
+            return sol, "cpsat"
+    elif force_tier == "tabu":
+        from src.solvers.tabu import TabuSearch
+
+        sol = TabuSearch().solve(
+            inst,
+            time_limit_sec=alns_time_limit,
+            seed=seed,
+            warm_start=warm,
+        )
+        tier = "tabu"
+    elif force_tier == "ga":
+        from src.solvers.ga import GeneticAlgorithm
+
+        sol = GeneticAlgorithm().solve(
+            inst,
+            time_limit_sec=alns_time_limit,
+            seed=seed,
+            warm_start=warm,
+        )
+        tier = "ga"
+    elif force_tier == "ga_tabu":
+        from src.solvers.ga_tabu import HybridGATabu
+
+        sol = HybridGATabu().solve(
+            inst,
+            time_limit_sec=alns_time_limit,
+            seed=seed,
+            warm_start=warm,
+        )
+        tier = "ga_tabu"
     else:
         # force_tier == "alns" or auto with K > threshold
         from src.solvers.alns import ALNS

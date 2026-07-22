@@ -1,15 +1,19 @@
 # Truck Gate Scheduler
 
-3-tier solver for external truck gate scheduling
+Multi-solver toolkit for external truck gate scheduling
 (\(Pm \mid r_j \mid \sum w_j C_j\)):
 
-| Tier | Solver | Role |
-|------|--------|------|
-| 1 | OR-Tools CP-SAT | Exact optimum on small instances |
-| 2 | ALNS | Near-optimal metaheuristic on larger instances |
-| 3 | Greedy ERD/SPT | Baseline and warm start |
+| Solver | Role |
+|--------|------|
+| OR-Tools CP-SAT | Exact optimum on small instances |
+| ALNS | Near-optimal metaheuristic (Auto tier for large `K`) |
+| Tabu Search | Local-search metaheuristic (compare) |
+| Genetic Algorithm | Global population search (compare) |
+| GA+Tabu Hybrid | Memetic: GA global + Tabu local (compare) |
+| Greedy ERD/SPT | Baseline and warm start |
 
-The **dispatcher** picks Tier 1 vs 2 from `config/switch_policy.json` (O(1) at solve time).
+The **dispatcher** picks CP-SAT vs ALNS from `config/switch_policy.json` (O(1) at solve time).
+Tabu, GA, and the hybrid are available for comparison via UI / `force_tier` (never selected by Auto).
 
 ## Setup
 
@@ -27,8 +31,9 @@ Run commands from the repo root so `src` imports resolve.
 .venv/bin/streamlit run src/ui/app.py
 ```
 
-Generate or upload an instance, choose an **Algorithm** (Auto / Greedy / ALNS / CP-SAT),
-click **Solve**. Enable **Compare all solvers** to also run greedy / ALNS / CP-SAT side by side.
+Generate or upload an instance, choose an **Algorithm**
+(Auto / Greedy / ALNS / Tabu Search / Genetic Algorithm / GA+Tabu Hybrid / CP-SAT),
+click **Solve**. Enable **Compare all solvers** to run all solvers side by side.
 
 ## Generate instance suites
 
@@ -69,6 +74,9 @@ from src.dispatch import solve
 inst = gen_instance(seed=42, M=5, N=5, G=2)
 sol, tier = solve(inst, seed=0)                    # Auto: size policy
 sol, tier = solve(inst, force_tier="alns")         # force ALNS
+sol, tier = solve(inst, force_tier="tabu")         # Tabu Search
+sol, tier = solve(inst, force_tier="ga")           # Genetic Algorithm
+sol, tier = solve(inst, force_tier="ga_tabu")      # GA + Tabu hybrid
 sol, tier = solve(inst, force_tier="cpsat")        # force CP-SAT (no ALNS fallback)
 sol, tier = solve(inst, force_tier="greedy")       # warm start only
 print(tier, sol.objective(inst), sol.starts, sol.gates)
@@ -80,8 +88,10 @@ print(tier, sol.objective(inst), sol.starts, sol.gates)
 - [x] Greedy ERD/SPT (+ variants)
 - [x] CP-SAT exact solver
 - [x] ALNS (destroy/repair, adaptive weights, SA)
+- [x] Tabu Search + Genetic Algorithm + GA/Tabu hybrid (compare solvers)
 - [x] Instance generator + TUNE/TEST/PROFILE suites
 - [x] `config/alns_params.json` + `config/switch_policy.json`
+- [x] `config/tabu_params.json` + `config/ga_params.json` + `config/ga_tabu_params.json`
 - [x] Dispatcher
 - [x] Benchmark runner + plots
 - [x] Streamlit UI with Gantt
