@@ -394,9 +394,9 @@ accepts `seed`. Report `iterations`, final `gap_pct` (vs best known if available
 | Param | Symbol | Default (lit.) | Search range |
 |-------|--------|----------------|--------------|
 | min destroy fraction | `ρ_min` | 0.10 | [0.05, 0.20] |
-| max destroy fraction | `ρ_max` | 0.40 | [0.20, 0.50] |
-| reaction factor | `λ` | 0.10 | [0.01, 0.5] |
-| segment length | `seg` | 100 | [50, 500] |
+| max destroy fraction | `ρ_max` | 0.30 | [0.20, 0.35] |
+| reaction factor | `λ` | 0.15 | [0.10, 0.20] |
+| segment length | `seg` | 150 | [100, 200] |
 | score: new best | `σ1` | 33 | [10, 50] |
 | score: better | `σ2` | 9 | [5, 25] |
 | score: accepted | `σ3` | 13 | [1, 20] |
@@ -497,7 +497,7 @@ percentile way. Otherwise keep the single-`K` rule (simplest).
 Write to `config/switch_policy.json`:
 ```json
 {
-  "budget_sec": 3.0,
+  "budget_sec": 10.0,
   "cpsat_time_limit_sec": 10.0,
   "threshold_K": 25,
   "T_cap": null,

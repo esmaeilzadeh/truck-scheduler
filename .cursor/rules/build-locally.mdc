@@ -1,11 +1,13 @@
 ---
-description: Prefer local build/run over remote deploy or cloud options
+description: Always build/run locally unless the user explicitly says otherwise
 alwaysApply: true
 ---
 
 # Always Build Locally
 
-When the user asks to build, run, set up, verify, or ship the app, **default to a local workflow** on this machine.
+**Always build, run, and verify locally unless the user explicitly says otherwise.**
+
+When the user asks to build, run, set up, verify, or ship the app, use a local workflow on this machine by default.
 
 ## Do
 
@@ -14,7 +16,7 @@ When the user asks to build, run, set up, verify, or ship the app, **default to 
 - Run `pytest` and smoke tests locally
 - Prefer finishing/fixing code so it runs end-to-end locally
 
-## Do not (unless explicitly requested)
+## Do not (unless the user explicitly requests it)
 
 - Deploy to remote servers (including IPs in `ip` or similar files)
 - Prefer cloud/remote build options when a local path exists

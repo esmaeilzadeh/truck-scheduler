@@ -18,9 +18,9 @@ from src.validate import validate
 
 PARAM_RANGES = {
     "rho_min": (0.05, 0.20),
-    "rho_max": (0.20, 0.50),
-    "lambda": (0.01, 0.50),
-    "segment_length": (50, 500),
+    "rho_max": (0.20, 0.35),
+    "lambda": (0.10, 0.20),
+    "segment_length": (100, 200),
     "sigma1": (10, 50),
     "sigma2": (5, 25),
     "sigma3": (1, 20),

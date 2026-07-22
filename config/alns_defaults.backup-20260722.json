@@ -1,0 +1,32 @@
+{
+  "source": "code fallbacks before literature alignment 2026-07-22",
+  "alns_DEFAULT_PARAMS": {
+    "rho_min": 0.1,
+    "rho_max": 0.4,
+    "lambda": 0.1,
+    "segment_length": 100,
+    "sigma1": 33,
+    "sigma2": 9,
+    "sigma3": 13,
+    "cooling": 0.99975,
+    "start_temp_ctrl": 0.05,
+    "regret_k": 3,
+    "d_wr": 3.0,
+    "max_iterations": 25000,
+    "q_cap": 12
+  },
+  "dispatch_DEFAULT_ALNS_PARAMS": {
+    "rho_min": 0.1,
+    "rho_max": 0.4,
+    "lambda": 0.1,
+    "segment_length": 100,
+    "sigma1": 33,
+    "sigma2": 9,
+    "sigma3": 13,
+    "cooling": 0.99975,
+    "start_temp_ctrl": 0.05,
+    "regret_k": 3,
+    "d_wr": 3.0,
+    "max_iterations": 25000
+  }
+}

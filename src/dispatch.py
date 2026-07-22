@@ -11,7 +11,7 @@ from src.solvers.greedy import GreedyERDSPT
 from src.validate import validate
 
 _DEFAULT_SWITCH_POLICY = {
-    "budget_sec": 5.0,
+    "budget_sec": 10.0,
     "cpsat_time_limit_sec": 10.0,
     "threshold_K": 25,
     "T_cap": None,
@@ -20,9 +20,9 @@ _DEFAULT_SWITCH_POLICY = {
 
 _DEFAULT_ALNS_PARAMS = {
     "rho_min": 0.10,
-    "rho_max": 0.40,
-    "lambda": 0.10,
-    "segment_length": 100,
+    "rho_max": 0.30,
+    "lambda": 0.15,
+    "segment_length": 150,
     "sigma1": 33,
     "sigma2": 9,
     "sigma3": 13,
@@ -135,7 +135,7 @@ def solve(
 
     threshold_K = policy.get("threshold_K", 25)
     T_cap = policy.get("T_cap", None)
-    budget = float(policy.get("budget_sec", 5.0))
+    budget = float(policy.get("budget_sec", 10.0))
     cpsat_budget = cpsat_time_limit_from_policy(policy)
 
     if exact_time_limit is None:
@@ -228,4 +228,44 @@ def solve(
         tier = "alns"
 
     validate(inst, sol)
+    # #region agent log
+    try:
+        import json as _json
+        import time as _time
+        from pathlib import Path as _Path
+
+        _obj_sol = sol.objective(inst)
+        _obj_warm = warm.objective(inst)
+        _chosen = sol if _obj_sol <= _obj_warm else warm
+        with _Path(
+            "/home/mohamad/Projects/UNI/algorithms/project/truck_scheduling/"
+            ".cursor/debug-172fe7.log"
+        ).open("a", encoding="utf-8") as _f:
+            _f.write(
+                _json.dumps(
+                    {
+                        "sessionId": "172fe7",
+                        "runId": "pre-fix",
+                        "hypothesisId": "D",
+                        "location": "dispatch.py:solve:best_of",
+                        "message": "dispatch best-of greedy guard",
+                        "data": {
+                            "tier": tier,
+                            "K": len(inst.ops),
+                            "obj_sol": _obj_sol,
+                            "obj_warm": _obj_warm,
+                            "chose_warm_greedy": _chosen is warm
+                            and _obj_sol > _obj_warm,
+                            "alns_meta": getattr(sol, "meta", None),
+                            "sol_runtime_sec": getattr(sol, "runtime_sec", None),
+                        },
+                        "timestamp": int(_time.time() * 1000),
+                    },
+                    default=str,
+                )
+                + "\n"
+            )
+    except OSError:
+        pass
+    # #endregion
     return _best_of(sol, warm, inst), tier

@@ -1,5 +1,5 @@
 {
-  "budget_sec": 3.0,
+  "budget_sec": 10.0,
   "cpsat_time_limit_sec": 10.0,
   "threshold_K": 25,
   "T_cap": null,

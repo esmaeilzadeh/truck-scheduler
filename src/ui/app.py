@@ -276,15 +276,15 @@ def main():
 
     policy = load_switch_policy()
     default_cpsat_limit = cpsat_time_limit_from_policy(policy)
-    default_alns_limit = float(policy.get("budget_sec", 5.0))
+    default_alns_limit = float(policy.get("budget_sec", 10.0))
 
     with st.sidebar:
         st.header("Instance Parameters")
         col1, col2 = st.columns(2)
         with col1:
-            M = st.number_input("Deliveries (M)", min_value=1, max_value=200, value=5)
+            M = st.number_input("Deliveries (M)", min_value=1, max_value=999, value=5)
         with col2:
-            N = st.number_input("Pickups (N)", min_value=1, max_value=200, value=5)
+            N = st.number_input("Pickups (N)", min_value=1, max_value=999, value=5)
 
         col3, col4 = st.columns(2)
         with col3:
@@ -343,13 +343,16 @@ def main():
                 f"(default {default_cpsat_limit:g}s)."
             )
 
+        # Seed once; keep a single key so Algorithm changes / reruns do not reset.
+        if "time_limit" not in st.session_state:
+            st.session_state["time_limit"] = float(tl_default)
+
         time_limit = st.number_input(
             "Time Limit (s)",
             min_value=0.1,
-            value=float(tl_default),
             step=1.0,
             help=tl_help,
-            key=f"time_limit_{force_tier}",
+            key="time_limit",
         )
 
         if force_tier == "auto":
