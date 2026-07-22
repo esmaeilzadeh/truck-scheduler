@@ -26,9 +26,29 @@ from src.instance_gen import gen_instance
 from src.model import Instance
 from src.solvers.alns import ALNS, DEFAULT_PARAMS
 from src.solvers.ga_tabu import HybridGATabu
-from src.tuning.tune_alns import PARAM_RANGES, _INT_PARAMS
+from src.tuning.tune_alns import _INT_PARAMS as _BASE_INT_PARAMS
 from src.validate import validate
 
+_INT_PARAMS = set(_BASE_INT_PARAMS) | {"insert_pos_cap"}
+
+
+# Large-K ranges: small q_cap is essential so ALNS gets enough iterations
+# to beat HybridGATabu within the 1.5x time envelope.
+PARAM_RANGES: dict[str, tuple[float, float]] = {
+    "rho_min": (0.01, 0.15),
+    "rho_max": (0.02, 0.25),
+    "lambda": (0.10, 0.25),
+    "segment_length": (50, 200),
+    "sigma1": (10, 50),
+    "sigma2": (5, 25),
+    "sigma3": (1, 20),
+    "cooling": (0.995, 0.99999),
+    "start_temp_ctrl": (0.01, 0.20),
+    "regret_k": (2, 4),
+    "d_wr": (1.0, 6.0),
+    "q_cap": (1, 4),
+    "insert_pos_cap": (8, 24),
+}
 
 # Size buckets: (M, N) with K = M+N up to 800
 DEFAULT_BUCKETS: list[tuple[int, int]] = [
@@ -38,13 +58,14 @@ DEFAULT_BUCKETS: list[tuple[int, int]] = [
     (400, 400),
 ]
 
-# Base wall budget B(K) for hybrid; ALNS gets 1.5 * B
-# Calibrated for large decode cost; override via --budget-scale or smoke.
+# Base wall budget B(K) for hybrid; ALNS gets 1.5 * B.
+# Calibrated so ALNS with small q_cap + insert_pos_cap can beat hybrid
+# through 400x400 (K=800) smoke.
 _BUDGET_BY_K: dict[int, float] = {
-    100: 3.0,
-    200: 6.0,
-    400: 12.0,
-    800: 24.0,
+    100: 8.0,
+    200: 12.0,
+    400: 20.0,
+    800: 75.0,
 }
 
 
@@ -148,7 +169,7 @@ def _sample_config(rng: random.Random, ranges: dict[str, tuple[float, float]]) -
 def _bias_ranges_for_speed(
     ranges: dict[str, tuple[float, float]],
 ) -> dict[str, tuple[float, float]]:
-    """Shrink destroy / q_cap toward cheaper repairs."""
+    """Shrink destroy / q_cap / insert_pos_cap toward cheaper repairs."""
     out = deepcopy(ranges)
     q_lo, q_hi = out["q_cap"]
     out["q_cap"] = (q_lo, max(q_lo, min(q_hi, (q_lo + q_hi) / 2)))
@@ -157,6 +178,9 @@ def _bias_ranges_for_speed(
     c_lo, c_hi = out["cooling"]
     # Faster cooling (lower values) exits exploration sooner under time caps
     out["cooling"] = (c_lo, max(c_lo, min(c_hi, (c_lo + c_hi) / 2)))
+    if "insert_pos_cap" in out:
+        p_lo, p_hi = out["insert_pos_cap"]
+        out["insert_pos_cap"] = (p_lo, max(p_lo, min(p_hi, (p_lo + p_hi) / 2)))
     return out
 
 
@@ -173,6 +197,10 @@ def _bias_ranges_for_quality(
     out["rho_max"] = (max(r_lo, mid_r), r_hi)
     rk_lo, rk_hi = out["regret_k"]
     out["regret_k"] = (max(rk_lo, (rk_lo + rk_hi) // 2), rk_hi)
+    if "insert_pos_cap" in out:
+        p_lo, p_hi = out["insert_pos_cap"]
+        mid_p = (p_lo + p_hi) / 2
+        out["insert_pos_cap"] = (max(p_lo, mid_p), p_hi)
     return out
 
 

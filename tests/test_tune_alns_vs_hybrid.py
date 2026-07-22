@@ -17,10 +17,10 @@ def test_parse_buckets():
 
 
 def test_budget_for_k_anchors():
-    assert budget_for_k(100) == 3.0
-    assert budget_for_k(800) == 24.0
+    assert budget_for_k(100) == 8.0
+    assert budget_for_k(800) == 75.0
     mid = budget_for_k(300)
-    assert 6.0 < mid < 12.0
+    assert 12.0 < mid < 20.0
 
 
 def test_tune_loop_smoke(tmp_path):

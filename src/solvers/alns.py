@@ -199,9 +199,36 @@ def _related_removal(
 # Repair operators (Section 5.4)
 # ---------------------------------------------------------------------------
 
+def _candidate_positions(
+    n_slots: int,
+    rng: random.Random,
+    insert_pos_cap: int = 0,
+) -> list[int]:
+    """Positions in ``0..n_slots-1`` (inclusive end = len(order)).
+
+    When ``insert_pos_cap`` > 0 and smaller than ``n_slots``, sample a capped
+    subset (always includes 0 and n_slots-1) so repairs stay cheap on large K.
+    """
+    if n_slots <= 0:
+        return [0]
+    if insert_pos_cap <= 0 or insert_pos_cap >= n_slots:
+        return list(range(n_slots))
+    # Always keep endpoints; fill the rest with evenly spaced + jitter picks
+    chosen = {0, n_slots - 1}
+    # Even spread
+    for i in range(insert_pos_cap - 2):
+        pos = 1 + int((i + 1) * (n_slots - 2) / (insert_pos_cap - 1))
+        chosen.add(min(n_slots - 1, max(0, pos)))
+    # Random extras if still short (duplicates collapse in set)
+    while len(chosen) < insert_pos_cap:
+        chosen.add(rng.randint(0, n_slots - 1))
+    return sorted(chosen)
+
+
 def _greedy_repair(
     remaining: list[int], removed: list[int], rng: random.Random, inst: Instance,
     deadline: float | None = None,
+    insert_pos_cap: int = 0,
     **_kwargs,
 ) -> list[int]:
     """Insert each removed op at best position (min objective)."""
@@ -214,7 +241,8 @@ def _greedy_repair(
         uid = pending.pop(0)
         best_pos = 0
         best_cost = float("inf")
-        for pos in range(len(order) + 1):
+        slots = len(order) + 1
+        for pos in _candidate_positions(slots, rng, insert_pos_cap):
             if pos % 8 == 0 and _deadline_hit(deadline):
                 return _append_remaining_random(order, [uid] + pending, rng)
             trial = order[:pos] + [uid] + order[pos:]
@@ -228,7 +256,8 @@ def _greedy_repair(
 
 def _regret_k_repair(
     remaining: list[int], removed: list[int], rng: random.Random,
-    inst: Instance, k: int = 3, deadline: float | None = None, **_kwargs,
+    inst: Instance, k: int = 3, deadline: float | None = None,
+    insert_pos_cap: int = 0, **_kwargs,
 ) -> list[int]:
     """Regret-k insertion: insert op with largest regret first."""
     order = list(remaining)
@@ -247,7 +276,8 @@ def _regret_k_repair(
                 return _append_remaining_random(order, bank, rng)
             costs: list[float] = []
             positions: list[int] = []
-            for pos in range(len(order) + 1):
+            slots = len(order) + 1
+            for pos in _candidate_positions(slots, rng, insert_pos_cap):
                 if pos % 8 == 0 and _deadline_hit(deadline):
                     return _append_remaining_random(order, bank, rng)
                 trial = order[:pos] + [uid] + order[pos:]
@@ -296,6 +326,8 @@ DEFAULT_PARAMS = {
     "max_iterations": 25000,
     # Cap destroy size so one repair stays cheap on large K
     "q_cap": 12,
+    # Cap insert-position evaluations (0 = all positions)
+    "insert_pos_cap": 0,
 }
 
 DESTROY_OPS = [
@@ -457,6 +489,7 @@ class ALNS:
 
             repair_kwargs = {"k": p["regret_k"]} if r_idx == 1 else {}
             repair_kwargs["deadline"] = deadline
+            repair_kwargs["insert_pos_cap"] = int(p.get("insert_pos_cap", 0) or 0)
             # #region agent log
             _t_rep = time.perf_counter()
             # #endregion
