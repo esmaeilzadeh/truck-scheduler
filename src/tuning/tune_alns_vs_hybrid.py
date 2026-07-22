@@ -32,6 +32,58 @@ from src.validate import validate
 _INT_PARAMS = set(_BASE_INT_PARAMS) | {"insert_pos_cap"}
 
 
+# Seed round-0 search with configs known to beat HybridGATabu in smoke probes.
+ANCHOR_CONFIGS: list[dict] = [
+    {
+        "rho_min": 0.01,
+        "rho_max": 0.05,
+        "lambda": 0.15,
+        "segment_length": 100,
+        "sigma1": 33,
+        "sigma2": 9,
+        "sigma3": 13,
+        "cooling": 0.99975,
+        "start_temp_ctrl": 0.05,
+        "regret_k": 2,
+        "d_wr": 3.0,
+        "q_cap": 1,
+        "insert_pos_cap": 8,
+        "max_iterations": DEFAULT_PARAMS["max_iterations"],
+    },
+    {
+        "rho_min": 0.01,
+        "rho_max": 0.05,
+        "lambda": 0.18,
+        "segment_length": 80,
+        "sigma1": 40,
+        "sigma2": 12,
+        "sigma3": 8,
+        "cooling": 0.9995,
+        "start_temp_ctrl": 0.08,
+        "regret_k": 2,
+        "d_wr": 2.0,
+        "q_cap": 1,
+        "insert_pos_cap": 12,
+        "max_iterations": DEFAULT_PARAMS["max_iterations"],
+    },
+    {
+        "rho_min": 0.02,
+        "rho_max": 0.08,
+        "lambda": 0.12,
+        "segment_length": 120,
+        "sigma1": 33,
+        "sigma2": 9,
+        "sigma3": 13,
+        "cooling": 0.9999,
+        "start_temp_ctrl": 0.04,
+        "regret_k": 3,
+        "d_wr": 3.0,
+        "q_cap": 2,
+        "insert_pos_cap": 10,
+        "max_iterations": DEFAULT_PARAMS["max_iterations"],
+    },
+]
+
 # Large-K ranges: small q_cap is essential so ALNS gets enough iterations
 # to beat HybridGATabu within the 1.5x time envelope.
 PARAM_RANGES: dict[str, tuple[float, float]] = {
@@ -419,7 +471,10 @@ def tune_loop(
         round_best_summary: EvalSummary | None = None
 
         for trial in range(n_configs_per_round):
-            cfg = _sample_config(rng, ranges)
+            if round_idx == 0 and trial < len(ANCHOR_CONFIGS):
+                cfg = dict(ANCHOR_CONFIGS[trial])
+            else:
+                cfg = _sample_config(rng, ranges)
             summary = evaluate_config(
                 cfg,
                 train,
