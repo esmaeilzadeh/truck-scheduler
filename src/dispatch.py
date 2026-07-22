@@ -12,8 +12,8 @@ from src.validate import validate
 
 _DEFAULT_SWITCH_POLICY = {
     "budget_sec": 5.0,
-    "cpsat_time_limit_sec": 120.0,
-    "threshold_K": 20,
+    "cpsat_time_limit_sec": 10.0,
+    "threshold_K": 25,
     "T_cap": None,
     "safety_margin_steps": 1,
 }
@@ -56,12 +56,12 @@ def load_switch_policy(
 
 
 def cpsat_time_limit_from_policy(policy: dict | None = None) -> float:
-    """CP-SAT wall-clock budget from config (default 120s)."""
+    """CP-SAT wall-clock budget from config (default 10s)."""
     if policy is None:
         policy = load_switch_policy()
     if "cpsat_time_limit_sec" in policy and policy["cpsat_time_limit_sec"] is not None:
         return float(policy["cpsat_time_limit_sec"])
-    return float(policy.get("budget_sec", 120.0))
+    return float(policy.get("budget_sec", 10.0))
 
 
 def _best_of(sol: Solution, warm: Solution, inst: Instance) -> Solution:
@@ -133,7 +133,7 @@ def solve(
         policy = load_switch_policy(policy_path)
     params = _load_json(params_path) or _DEFAULT_ALNS_PARAMS
 
-    threshold_K = policy.get("threshold_K", 20)
+    threshold_K = policy.get("threshold_K", 25)
     T_cap = policy.get("T_cap", None)
     budget = float(policy.get("budget_sec", 5.0))
     cpsat_budget = cpsat_time_limit_from_policy(policy)

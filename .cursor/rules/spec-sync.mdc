@@ -1,0 +1,19 @@
+---
+description: Keep SPEC.md in sync with behavior changes — ask before editing it
+alwaysApply: true
+---
+
+# SPEC.md sync
+
+When a requested change alters behavior, defaults, APIs, config policy, or other
+details documented in `SPEC.md`:
+
+1. **Ask first** before editing `SPEC.md` (e.g. “This changes the Auto policy
+   numbers in SPEC — update SPEC.md too?”).
+2. Only update `SPEC.md` after the user confirms.
+3. When updating, change the corresponding sections only (thresholds, timeouts,
+   algorithms, UI behavior, checklist/defaults) so the spec matches the code.
+
+Do not silently skip SPEC updates when the user has approved them, and do not
+edit SPEC for pure refactors or internal cleanups that leave the documented
+contract unchanged.

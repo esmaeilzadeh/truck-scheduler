@@ -265,7 +265,7 @@ substitution in the dispatcher.
 ### 4A.4 Solve settings
 - `solver.parameters.max_time_in_seconds = time_limit_sec` (if given).
 - Default / forced CP-SAT wall budget comes from `switch_policy.json` field
-  `cpsat_time_limit_sec` (default **120** s) when the caller does not pass an override.
+  `cpsat_time_limit_sec` (default **10** s) when the caller does not pass an override.
 - `solver.parameters.num_search_workers = 8` (configurable).
 - Warm start (optional): use `AddHint(s_k, warm.starts[k])` and `AddHint(x[k,gate], 1)`
   from the greedy solution.
@@ -497,12 +497,12 @@ percentile way. Otherwise keep the single-`K` rule (simplest).
 Write to `config/switch_policy.json`:
 ```json
 {
-  "budget_sec": 5.0,
-  "cpsat_time_limit_sec": 120.0,
-  "threshold_K": 22,
+  "budget_sec": 3.0,
+  "cpsat_time_limit_sec": 10.0,
+  "threshold_K": 25,
   "T_cap": null,
   "safety_margin_steps": 1,
-  "notes": "P95 CP-SAT time <= budget up to K=24; deployed 22 with 1-step margin"
+  "notes": "Manual Auto policy: CP-SAT when K=M+N<=25, ALNS when K>25; cpsat_time_limit_sec=10s"
 }
 ```
 - `budget_sec` — Auto ALNS / shared UI default for metaheuristics.
@@ -637,8 +637,8 @@ Fallback if time is short: a **Jupyter notebook** rendering the same Gantt + tab
 ## 13. Defaults if you skip tuning/profiling (safe fallbacks)
 
 - ALNS params: literature defaults in Section 5.9 (or tuned file if present).
-- Switch threshold: `threshold_K = 20`, `T_cap = null`, `budget_sec` for ALNS,
-  **`cpsat_time_limit_sec = 120`** for forced/exact CP-SAT, with Auto ALNS fall-back when
+- Switch threshold: `threshold_K = 25`, `T_cap = null`, `budget_sec` for ALNS,
+  **`cpsat_time_limit_sec = 10`** for forced/exact CP-SAT, with Auto ALNS fall-back when
   CP-SAT does not prove optimality.
 - Tabu / GA / hybrid: defaults in Section 4B config files (hand-chosen starting points;
   not offline-tuned).

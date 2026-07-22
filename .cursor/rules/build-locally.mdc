@@ -1,0 +1,25 @@
+---
+description: Prefer local build/run over remote deploy or cloud options
+alwaysApply: true
+---
+
+# Always Build Locally
+
+When the user asks to build, run, set up, verify, or ship the app, **default to a local workflow** on this machine.
+
+## Do
+
+- Use the project `.venv`, `pip install -r requirements.txt`, and local commands
+- Run Streamlit locally (`streamlit run src/ui/app.py`)
+- Run `pytest` and smoke tests locally
+- Prefer finishing/fixing code so it runs end-to-end locally
+
+## Do not (unless explicitly requested)
+
+- Deploy to remote servers (including IPs in `ip` or similar files)
+- Prefer cloud/remote build options when a local path exists
+- Ask whether to build locally vs remotely — choose local by default
+
+## Clarifying questions
+
+Only ask about remote/deploy if the user clearly wants production hosting, CI, or a remote machine. Otherwise assume local.

@@ -1,8 +1,8 @@
 {
   "budget_sec": 3.0,
-  "cpsat_time_limit_sec": 120.0,
-  "threshold_K": 9,
+  "cpsat_time_limit_sec": 10.0,
+  "threshold_K": 25,
   "T_cap": null,
   "safety_margin_steps": 1,
-  "notes": "P95 CP-SAT time <= 3.0s up to K=10; deployed 9 with 1-step margin. cpsat_time_limit_sec is the forced/UI CP-SAT wall budget (2 min)."
+  "notes": "Manual Auto policy: CP-SAT when K=M+N<=25, ALNS when K>25; cpsat_time_limit_sec=10s wall budget for forced/exact CP-SAT."
 }

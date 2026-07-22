@@ -339,7 +339,8 @@ def main():
             tl_default = default_alns_limit
             tl_help = (
                 f"Default from config budget_sec={default_alns_limit:g}. "
-                "Forced CP-SAT uses cpsat_time_limit_sec (default 120s)."
+                f"Forced CP-SAT uses cpsat_time_limit_sec "
+                f"(default {default_cpsat_limit:g}s)."
             )
 
         time_limit = st.number_input(
