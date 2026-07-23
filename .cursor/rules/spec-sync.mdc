@@ -1,18 +1,27 @@
 ---
-description: Keep SPEC.md in sync with behavior changes — ask before editing it
+description: Keep split SPEC (spec/) in sync with behavior — ask before editing
 alwaysApply: true
 ---
 
-# SPEC.md sync
+# SPEC sync (`spec/` + root index)
+
+Canonical section bodies live under `spec/` (e.g. `spec/05-alns.md`).
+Root `SPEC.md` is only a TOC — do not paste full section text back into it.
 
 When a requested change alters behavior, defaults, APIs, config policy, or other
-details documented in `SPEC.md`:
+documented details:
 
-1. **Ask first** before editing `SPEC.md` (e.g. “This changes the Auto policy
-   numbers in SPEC — update SPEC.md too?”).
-2. Only update `SPEC.md` after the user confirms.
-3. When updating, change the corresponding sections only (thresholds, timeouts,
-   algorithms, UI behavior, checklist/defaults) so the spec matches the code.
+1. **Ask first** before editing any SPEC file (e.g. “This changes the Auto policy
+   numbers in SPEC — update the relevant `spec/` file too?”).
+2. Only update after the user confirms.
+3. Edit **only the smallest relevant file(s)** under `spec/`, for example:
+   - ALNS algorithm / params → `spec/05-alns.md`
+   - ALNS+Tabu / Tabu / GA → `spec/04b-metaheuristics.md`
+   - Dispatcher / Auto / `force_tier` → `spec/08-dispatcher.md`
+   - Switch threshold / budgets → `spec/07-tier-switch.md`
+   - UI algorithm list → `spec/10-ui.md`
+   - Checklist / defaults → `spec/12-checklist.md` / `spec/13-defaults.md`
+4. Update the root `SPEC.md` index **only** if section titles or file names change.
 
 Do not silently skip SPEC updates when the user has approved them, and do not
 edit SPEC for pure refactors or internal cleanups that leave the documented
