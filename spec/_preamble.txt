@@ -1,0 +1,11 @@
+# Implementation Specification — External Truck Gate Scheduling
+
+**Status:** Implementable spec (v1) — updated to match the implemented codebase
+**Source problem:** `project-5-trucks-scheduling.md` (the corrected/polished formulation)
+**Goal of this document:** Give a complete, unambiguous, build-ready specification for a
+**3-tier solver** for the gate-scheduling problem, including the exact algorithms,
+the offline hyperparameter-tuning procedure, the offline tier-switching procedure,
+and **compare metaheuristics** (Tabu, GA, GA+Tabu hybrid) used for reporting only, plus
+an **ALNS+Tabu** memetic Tier-2 path selected by Auto on large instances.
+
+---
