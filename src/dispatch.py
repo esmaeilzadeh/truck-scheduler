@@ -28,8 +28,10 @@ _DEFAULT_ALNS_PARAMS = {
     "sigma3": 13,
     "cooling": 0.99975,
     "start_temp_ctrl": 0.05,
+    "final_temp_ratio": 0.002,
     "regret_k": 3,
     "d_wr": 3.0,
+    "q_cap": 0,
     "max_iterations": 25000,
 }
 
