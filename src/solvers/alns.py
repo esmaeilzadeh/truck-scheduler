@@ -329,13 +329,12 @@ DEFAULT_PARAMS = {
     "sigma3": 13,
     "cooling": 0.99975,
     "start_temp_ctrl": 0.05,
+    "final_temp_ratio": 0.002,
     "regret_k": 3,
     "d_wr": 3.0,
     "max_iterations": 25000,
-    # Cap destroy size so one repair stays cheap on large K
-    "q_cap": 12,
-    # Cap insert-position evaluations (0 = all positions)
-    "insert_pos_cap": 0,
+    # 0 = disabled (use full rho_min/rho_max range)
+    "q_cap": 0,
 }
 
 DESTROY_OPS = [
@@ -397,23 +396,40 @@ class ALNS:
         rng = random.Random(seed if seed is not None else 0)
         K = len(inst.ops)
 
-        # Initial solution from greedy ERD/SPT order (Section 5.2)
-        greedy_sol = warm_start if warm_start is not None else greedy_erd_spt(inst)
-        init_order = [
-            op.uid
-            for op in sorted(inst.ops, key=lambda op: (op.r, op.p, -op.w, op.uid))
-        ]
+        # Initial solution: warm-start order when provided, else ERD/SPT (5.2)
+        greedy_sol = greedy_erd_spt(inst)
+        if warm_start is not None:
+            init_order = sorted(
+                warm_start.starts.keys(),
+                key=lambda u: (warm_start.starts[u], warm_start.gates[u]),
+            )
+            # Guard: use greedy if warm start is incomplete
+            if len(init_order) != K:
+                init_order = [
+                    op.uid
+                    for op in sorted(
+                        inst.ops, key=lambda op: (op.r, op.p, -op.w, op.uid)
+                    )
+                ]
+            greedy_ref = warm_start
+        else:
+            init_order = [
+                op.uid
+                for op in sorted(inst.ops, key=lambda op: (op.r, op.p, -op.w, op.uid))
+            ]
+            greedy_ref = greedy_sol
 
         cur_state = _ScheduleState.from_order(inst, init_order)
         best_order = list(init_order)
         obj_cur = cur_state.objective
         obj_best = obj_cur
-        obj_greedy = greedy_sol.objective(inst)
+        obj_greedy = greedy_ref.objective(inst)
 
         temp0 = (
             -(p["start_temp_ctrl"] * obj_cur) / math.log(0.5) if obj_cur > 0 else 1.0
         )
         temp = temp0
+        final_temp_ratio = float(p.get("final_temp_ratio", 0.002))
 
         n_destroy = len(DESTROY_OPS)
         n_repair = len(REPAIR_OPS)
@@ -426,7 +442,7 @@ class ALNS:
 
         q_min = max(1, math.ceil(p["rho_min"] * K))
         q_max = max(q_min, math.ceil(p["rho_max"] * K))
-        q_cap = int(p.get("q_cap", 12))
+        q_cap = int(p.get("q_cap", 0) or 0)
         if q_cap > 0:
             q_min = min(q_min, q_cap)
             q_max = min(q_max, q_cap)
@@ -491,7 +507,14 @@ class ALNS:
 
             use_destroy[d_idx] += 1
             use_repair[r_idx] += 1
-            temp *= p["cooling"]
+
+            # Time-based cooling when a budget is set; else classic geometric
+            if time_limit_sec is not None and time_limit_sec > 0:
+                elapsed = time.perf_counter() - t0
+                frac = min(1.0, max(0.0, elapsed / time_limit_sec))
+                temp = temp0 * (final_temp_ratio ** frac)
+            else:
+                temp *= p["cooling"]
 
             if (it + 1) % p["segment_length"] == 0:
                 lam = p["lambda"]
@@ -513,11 +536,11 @@ class ALNS:
         runtime = time.perf_counter() - t0
         sol = decode(inst, best_order)
 
-        # Never worse than greedy warm start
+        # Never worse than greedy / warm-start baseline
         if obj_best > obj_greedy:
             sol = Solution(
-                starts=dict(greedy_sol.starts),
-                gates=dict(greedy_sol.gates),
+                starts=dict(greedy_ref.starts),
+                gates=dict(greedy_ref.gates),
             )
             obj_best = obj_greedy
 
