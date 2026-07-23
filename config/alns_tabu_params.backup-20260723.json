@@ -1,6 +1,6 @@
 {
-  "rho_min": 0.1,
-  "rho_max": 0.20481503658560568,
+  "rho_min": 0.10,
+  "rho_max": 0.30,
   "lambda": 0.15,
   "segment_length": 150,
   "sigma1": 33,
@@ -11,11 +11,11 @@
   "final_temp_ratio": 0.002,
   "regret_k": 3,
   "d_wr": 3.0,
+  "q_cap": 0,
   "max_iterations": 25000,
-  "q_cap": 10,
-  "local_search_rate": 0.3215999690411857,
-  "local_tabu_iters": 44,
-  "local_neighborhood_size": 36,
+  "local_search_rate": 0.15,
+  "local_tabu_iters": 40,
+  "local_neighborhood_size": 20,
   "tabu_tenure": 7,
   "swap_prob": 0.5
 }
