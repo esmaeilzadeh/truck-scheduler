@@ -2,7 +2,8 @@
 
 ```
 truck_scheduling/
-  SPEC.md                      # this file
+  SPEC.md                      # index / TOC into spec/
+  spec/                        # split specification (edit only the changed section)
   project-5-trucks-scheduling.md
   README.md
   requirements.txt             # ortools, numpy, pandas, matplotlib/plotly, streamlit, (optional) numba, irace-py or smac
