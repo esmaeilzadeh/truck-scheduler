@@ -32,6 +32,9 @@ PARAM_RANGES = {
     "q_cap": (4, 40),
 }
 
+# SPEC 6H.3 course-project light search (others frozen at DEFAULT_PARAMS)
+LIGHT_PARAM_KEYS = ("rho_max", "cooling", "segment_length", "lambda")
+
 _INT_PARAMS = {
     "segment_length",
     "regret_k",
@@ -42,13 +45,27 @@ _INT_PARAMS = {
 }
 
 
-def _sample_config(rng: random.Random) -> dict:
+def _sample_one(rng: random.Random, key: str) -> float | int:
+    lo, hi = PARAM_RANGES[key]
+    if key in _INT_PARAMS:
+        return rng.randint(int(lo), int(hi))
+    return rng.uniform(lo, hi)
+
+
+def _sample_config(rng: random.Random, *, light: bool = False) -> dict:
+    """Sample a config. Light mode varies only {ρ_max, cooling, seg, λ}."""
+    if light:
+        cfg = dict(DEFAULT_PARAMS)
+        for key in LIGHT_PARAM_KEYS:
+            cfg[key] = _sample_one(rng, key)
+        # Keep rho_min ≤ rho_max with rho_min frozen at literature default
+        if cfg["rho_max"] < cfg["rho_min"]:
+            cfg["rho_max"] = cfg["rho_min"]
+        return cfg
+
     cfg: dict = {}
-    for k, (lo, hi) in PARAM_RANGES.items():
-        if k in _INT_PARAMS:
-            cfg[k] = rng.randint(int(lo), int(hi))
-        else:
-            cfg[k] = rng.uniform(lo, hi)
+    for k in PARAM_RANGES:
+        cfg[k] = _sample_one(rng, k)
     if cfg["rho_min"] > cfg["rho_max"]:
         cfg["rho_min"], cfg["rho_max"] = cfg["rho_max"], cfg["rho_min"]
     cfg["max_iterations"] = DEFAULT_PARAMS["max_iterations"]
@@ -150,6 +167,7 @@ def tune(
     run_budget_sec: float = 5.0,
     output_dir: str = "data/results",
     config_path: str = "config/alns_params.json",
+    light: bool = False,
 ) -> dict:
     """Run random-search tuning. Returns best config dict."""
     rng = random.Random(42)
@@ -157,8 +175,13 @@ def tune(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     Path(config_path).parent.mkdir(parents=True, exist_ok=True)
 
+    mode = (
+        f"light ({', '.join(LIGHT_PARAM_KEYS)})"
+        if light
+        else "full PARAM_RANGES"
+    )
     print(
-        f"Tuning on {len(instances)} instances "
+        f"Tuning ({mode}) on {len(instances)} instances "
         f"(K={[len(i.ops) for i in instances]}), "
         f"{n_configs} configs × {seeds_per_config} seeds × {run_budget_sec}s"
     )
@@ -181,7 +204,7 @@ def tune(
 
     t0 = time.perf_counter()
     for trial in range(n_configs):
-        cfg = _sample_config(rng)
+        cfg = _sample_config(rng, light=light)
         for inst in instances:
             for s in range(seeds_per_config):
                 try:
@@ -227,10 +250,13 @@ def tune(
             best_mean_gap = mean_gap
             best_cfg = {k: v for k, v in row.items() if k not in ("trial", "mean_gap")}
 
-    # Stable column order for CSV
+    # Stable column order for CSV (full DEFAULT_PARAMS keys when light)
     csv_path = Path(output_dir) / "alns_tuning.csv"
     if results:
-        fieldnames = ["trial", "mean_gap", *PARAM_RANGES.keys(), "max_iterations"]
+        param_keys = list(DEFAULT_PARAMS.keys()) if light else [
+            *PARAM_RANGES.keys(), "max_iterations",
+        ]
+        fieldnames = ["trial", "mean_gap", *param_keys]
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
@@ -253,6 +279,12 @@ def main() -> None:
     parser.add_argument("--budget", type=float, default=3.0)
     parser.add_argument("--max-instances", type=int, default=8)
     parser.add_argument("--no-large", action="store_true", help="Only on-disk TUNE (K≤20)")
+    parser.add_argument(
+        "--light", "--course",
+        action="store_true",
+        dest="light",
+        help="SPEC 6H.3 light search: only {rho_max, cooling, segment_length, lambda}",
+    )
     parser.add_argument("--output-dir", default="data/results")
     parser.add_argument("--config-path", default="config/alns_params.json")
     args = parser.parse_args()
@@ -268,6 +300,7 @@ def main() -> None:
         run_budget_sec=args.budget,
         output_dir=args.output_dir,
         config_path=args.config_path,
+        light=args.light,
     )
     print("Best config:", json.dumps(best, indent=2))
 
