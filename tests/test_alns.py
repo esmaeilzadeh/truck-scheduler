@@ -52,3 +52,24 @@ def test_alns_respects_time_limit_on_large_instance():
     validate(inst, sol)
     assert sol.runtime_sec <= limit + 0.5
     assert (sol.meta or {}).get("iterations", 0) >= 1
+
+
+def test_alns_schedule_objective_consistency():
+    """Returned solution validates and objective matches recomputation."""
+    inst = gen_instance(seed=11, M=5, N=5, G=2)
+    sol = ALNS().solve(inst, time_limit_sec=1.0, seed=0)
+    validate(inst, sol)
+    recomputed = sum(
+        op.w * sol.starts[op.uid] for op in inst.ops
+    )
+    assert abs(sol.objective(inst) - recomputed) < 1e-9
+
+
+def test_alns_throughput_schedule_based():
+    """Schedule-based repair should far exceed the old ~136 iters/s."""
+    inst = gen_instance(seed=42, M=8, N=7, G=2)
+    sol = ALNS().solve(inst, time_limit_sec=1.0, seed=0)
+    validate(inst, sol)
+    iters = (sol.meta or {}).get("iterations", 0)
+    # Generous vs ~136 with position-scan repair; allow CI load variance
+    assert iters >= 500, f"expected >= 500 iterations, got {iters}"
