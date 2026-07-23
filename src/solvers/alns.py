@@ -151,106 +151,68 @@ def _deadline_hit(deadline: float | None) -> bool:
     return deadline is not None and time.perf_counter() >= deadline
 
 
-def _append_remaining_random(
-    order: list[int], remaining: list[int], rng: random.Random,
-) -> list[int]:
-    """Cheap fallback when the time budget expires mid-repair."""
-    out = list(order)
-    bag = list(remaining)
-    rng.shuffle(bag)
-    for uid in bag:
-        out.insert(rng.randint(0, len(out)), uid)
-    return out
-
-
 # ---------------------------------------------------------------------------
-# Destroy operators (Section 5.3)
+# Destroy operators (Section 5.3) — operate on schedule state
 # ---------------------------------------------------------------------------
 
 def _random_remove(
-    order: list[int], q: int, rng: random.Random, inst: Instance,
-    **_kwargs,
-) -> tuple[list[int], list[int]]:
-    """Remove q random ops from order."""
-    del inst
-    to_remove = set(rng.sample(range(len(order)), min(q, len(order))))
-    remaining = [uid for i, uid in enumerate(order) if i not in to_remove]
-    removed = [uid for i, uid in enumerate(order) if i in to_remove]
-    return remaining, removed
+    state: _ScheduleState, q: int, rng: random.Random, **_kwargs,
+) -> list[int]:
+    """Remove q random ops from the schedule; return the removal bank."""
+    uids = list(state.starts.keys())
+    removed = rng.sample(uids, min(q, len(uids)))
+    for uid in removed:
+        state.remove(uid)
+    return removed
 
 
 def _worst_remove(
-    order: list[int], q: int, rng: random.Random, inst: Instance,
-    d_wr: float = 3.0,
-    **_kwargs,
-) -> tuple[list[int], list[int]]:
-    """Remove q ops with highest cost contribution, biased selection."""
-    ops_by_uid = {op.uid: op for op in inst.ops}
-    gate_intervals: dict[int, list[tuple[int, int]]] = {
-        g: [] for g in range(1, inst.G + 1)
-    }
-    temp_starts: dict[int, int] = {}
-    for uid in order:
-        op = ops_by_uid[uid]
-        t, g = _place_op(op, gate_intervals, inst.G, inst.T)
-        temp_starts[uid] = t
-        bisect.insort(gate_intervals[g], (t, t + op.p))
-
-    # Highest cost first (rank 0 = worst)
-    cost_list = [(ops_by_uid[uid].w * temp_starts[uid], uid) for uid in order]
+    state: _ScheduleState, q: int, rng: random.Random, d_wr: float = 3.0, **_kwargs,
+) -> list[int]:
+    """Remove q ops with highest w·start contribution (biased rank selection)."""
+    cost_list = [
+        (state.ops_by_uid[uid].w * state.starts[uid], uid)
+        for uid in state.starts
+    ]
     cost_list.sort(key=lambda x: -x[0])
 
-    remaining_order = list(order)
     removed: list[int] = []
     for _ in range(min(q, len(cost_list))):
         n = len(cost_list)
         if n == 0:
             break
-        # Prefer worse ranks: weight ∝ (n - i)^d_wr so index 0 gets highest weight
         weights = [(n - i) ** d_wr for i in range(n)]
         idx = rng.choices(range(n), weights=weights, k=1)[0]
         _, uid = cost_list.pop(idx)
         removed.append(uid)
-        remaining_order.remove(uid)
-
-    return remaining_order, removed
+        state.remove(uid)
+    return removed
 
 
 def _related_removal(
-    order: list[int], q: int, rng: random.Random, inst: Instance,
-    **_kwargs,
-) -> tuple[list[int], list[int]]:
+    state: _ScheduleState, q: int, rng: random.Random, **_kwargs,
+) -> list[int]:
     """Shaw/related removal: seed + most related ops."""
-    ops_by_uid = {op.uid: op for op in inst.ops}
+    uids = list(state.starts.keys())
+    if not uids:
+        return []
 
-    gate_intervals: dict[int, list[tuple[int, int]]] = {
-        g: [] for g in range(1, inst.G + 1)
-    }
-    temp_starts: dict[int, int] = {}
-    temp_gates: dict[int, int] = {}
-    for uid in order:
-        op = ops_by_uid[uid]
-        t, g = _place_op(op, gate_intervals, inst.G, inst.T)
-        temp_starts[uid] = t
-        temp_gates[uid] = g
-        bisect.insort(gate_intervals[g], (t, t + op.p))
-
-    T = inst.T
+    ops_by_uid = state.ops_by_uid
+    T = state.inst.T
     alpha, beta, gamma, delta = 1.0, 1.0, T / 4, 1.0
 
-    seed_idx = rng.randint(0, len(order) - 1)
-    seed_uid = order[seed_idx]
+    seed_uid = rng.choice(uids)
 
     def rel(a: int, b: int) -> float:
         oa, ob = ops_by_uid[a], ops_by_uid[b]
         return (
             alpha * abs(oa.r - ob.r)
             + beta * abs(oa.p - ob.p)
-            + gamma * (1 if temp_gates.get(a, 0) != temp_gates.get(b, 0) else 0)
-            + delta * abs(temp_starts.get(a, 0) - temp_starts.get(b, 0))
+            + gamma * (1 if state.gates[a] != state.gates[b] else 0)
+            + delta * abs(state.starts[a] - state.starts[b])
         )
 
-    candidates = [(rel(seed_uid, uid), uid) for uid in order if uid != seed_uid]
+    candidates = [(rel(seed_uid, uid), uid) for uid in uids if uid != seed_uid]
     candidates.sort()
 
     removed = [seed_uid]
@@ -259,120 +221,98 @@ def _related_removal(
             break
         removed.append(uid)
 
-    remaining = [uid for uid in order if uid not in set(removed)]
-    return remaining, removed
+    for uid in removed:
+        state.remove(uid)
+    return removed
 
 
 # ---------------------------------------------------------------------------
-# Repair operators (Section 5.4)
+# Repair operators (Section 5.4) — schedule-based insertion
 # ---------------------------------------------------------------------------
 
-def _candidate_positions(
-    n_slots: int,
-    rng: random.Random,
-    insert_pos_cap: int = 0,
-) -> list[int]:
-    """Positions in ``0..n_slots-1`` (inclusive end = len(order)).
-
-    When ``insert_pos_cap`` > 0 and smaller than ``n_slots``, sample a capped
-    subset (always includes 0 and n_slots-1) so repairs stay cheap on large K.
-    """
-    if n_slots <= 0:
-        return [0]
-    if insert_pos_cap <= 0 or insert_pos_cap >= n_slots:
-        return list(range(n_slots))
-    # Always keep endpoints; fill the rest with evenly spaced + jitter picks
-    chosen = {0, n_slots - 1}
-    # Even spread
-    for i in range(insert_pos_cap - 2):
-        pos = 1 + int((i + 1) * (n_slots - 2) / (insert_pos_cap - 1))
-        chosen.add(min(n_slots - 1, max(0, pos)))
-    # Random extras if still short (duplicates collapse in set)
-    while len(chosen) < insert_pos_cap:
-        chosen.add(rng.randint(0, n_slots - 1))
-    return sorted(chosen)
+def _gate_insertion_costs(
+    state: _ScheduleState, op: Operation,
+) -> list[tuple[float, int, int]]:
+    """Per-gate insertion costs as (cost, t, g), sorted ascending by cost."""
+    costs: list[tuple[float, int, int]] = []
+    for g in range(1, state.inst.G + 1):
+        t = earliest_start(state.gate_intervals[g], op.r, op.p, state.inst.T)
+        if t is None:
+            continue
+        costs.append((op.w * t, t, g))
+    costs.sort()
+    return costs
 
 
 def _greedy_repair(
-    remaining: list[int], removed: list[int], rng: random.Random, inst: Instance,
+    state: _ScheduleState,
+    removed: list[int],
+    rng: random.Random,
     deadline: float | None = None,
-    insert_pos_cap: int = 0,
     **_kwargs,
-) -> list[int]:
-    """Insert each removed op at best position (min objective)."""
-    rng.shuffle(removed)
-    order = list(remaining)
-    pending = list(removed)
-    while pending:
+) -> None:
+    """Insert each removed op at its cheapest (t, g) via best_insertion."""
+    bank = list(removed)
+    rng.shuffle(bank)
+    for i, uid in enumerate(bank):
         if _deadline_hit(deadline):
-            return _append_remaining_random(order, pending, rng)
-        uid = pending.pop(0)
-        best_pos = 0
-        best_cost = float("inf")
-        slots = len(order) + 1
-        for pos in _candidate_positions(slots, rng, insert_pos_cap):
-            if pos % 8 == 0 and _deadline_hit(deadline):
-                return _append_remaining_random(order, [uid] + pending, rng)
-            trial = order[:pos] + [uid] + order[pos:]
-            cost = _objective_from_order(inst, trial)
-            if cost < best_cost:
-                best_cost = cost
-                best_pos = pos
-        order.insert(best_pos, uid)
-    return order
+            for rest in bank[i:]:
+                if rest not in state.starts:
+                    _, t, g = state.best_insertion(state.ops_by_uid[rest])
+                    state.insert(rest, t, g)
+            return
+        _, t, g = state.best_insertion(state.ops_by_uid[uid])
+        state.insert(uid, t, g)
 
 
 def _regret_k_repair(
-    remaining: list[int], removed: list[int], rng: random.Random,
-    inst: Instance, k: int = 3, deadline: float | None = None,
-    insert_pos_cap: int = 0, **_kwargs,
-) -> list[int]:
-    """Regret-k insertion: insert op with largest regret first."""
-    order = list(remaining)
+    state: _ScheduleState,
+    removed: list[int],
+    rng: random.Random,
+    k: int = 3,
+    deadline: float | None = None,
+    **_kwargs,
+) -> None:
+    """Regret-k over per-gate insertion costs; insert largest-regret op first."""
+    del rng
     bank = list(removed)
 
     while bank:
         if _deadline_hit(deadline):
-            return _append_remaining_random(order, bank, rng)
+            for uid in bank:
+                if uid not in state.starts:
+                    _, t, g = state.best_insertion(state.ops_by_uid[uid])
+                    state.insert(uid, t, g)
+            return
 
-        best_uid = None
+        best_uid: int | None = None
         best_regret = -float("inf")
-        best_pos = 0
+        best_tg: tuple[int, int] = (0, 1)
 
         for uid in bank:
             if _deadline_hit(deadline):
-                return _append_remaining_random(order, bank, rng)
-            costs: list[float] = []
-            positions: list[int] = []
-            slots = len(order) + 1
-            for pos in _candidate_positions(slots, rng, insert_pos_cap):
-                if pos % 8 == 0 and _deadline_hit(deadline):
-                    return _append_remaining_random(order, bank, rng)
-                trial = order[:pos] + [uid] + order[pos:]
-                cost = _objective_from_order(inst, trial)
-                costs.append(cost)
-                positions.append(pos)
+                for rest in bank:
+                    if rest not in state.starts:
+                        _, t, g = state.best_insertion(state.ops_by_uid[rest])
+                        state.insert(rest, t, g)
+                return
 
-            sorted_pairs = sorted(zip(costs, positions))
-            c1 = sorted_pairs[0][0]
-            regret = sum(
-                sorted_pairs[m][0] - c1 for m in range(1, min(k, len(sorted_pairs)))
-            )
-
+            costs = _gate_insertion_costs(state, state.ops_by_uid[uid])
+            if not costs:
+                raise Infeasible(f"Cannot place operation {uid}")
+            c1 = costs[0][0]
+            regret = sum(costs[m][0] - c1 for m in range(1, min(k, len(costs))))
             if regret > best_regret or (
                 regret == best_regret and (best_uid is None or uid < best_uid)
             ):
                 best_regret = regret
                 best_uid = uid
-                best_pos = sorted_pairs[0][1]
+                best_tg = (costs[0][1], costs[0][2])
 
         if best_uid is None:
             break
-
-        order.insert(best_pos, best_uid)
+        state.insert(best_uid, best_tg[0], best_tg[1])
         bank.remove(best_uid)
-
-    return order
 
 
 # ---------------------------------------------------------------------------
@@ -464,11 +404,9 @@ class ALNS:
             for op in sorted(inst.ops, key=lambda op: (op.r, op.p, -op.w, op.uid))
         ]
 
-        x_cur = decode(inst, init_order)
+        cur_state = _ScheduleState.from_order(inst, init_order)
         best_order = list(init_order)
-        cur_order = list(init_order)
-
-        obj_cur = x_cur.objective(inst)
+        obj_cur = cur_state.objective
         obj_best = obj_cur
         obj_greedy = greedy_sol.objective(inst)
 
@@ -507,22 +445,22 @@ class ALNS:
             r_idx = rng.choices(range(n_repair), weights=w_repair, k=1)[0]
             q = rng.randint(q_min, q_max)
 
+            cand = cur_state.copy()
             destroy_kwargs = {"d_wr": p["d_wr"]} if d_idx == 1 else {}
-            remaining, removed = DESTROY_OPS[d_idx](
-                cur_order, q, rng, inst, **destroy_kwargs
-            )
+            removed = DESTROY_OPS[d_idx](cand, q, rng, **destroy_kwargs)
 
             if _deadline_hit(deadline):
                 break
 
-            repair_kwargs = {"k": p["regret_k"]} if r_idx == 1 else {}
-            repair_kwargs["deadline"] = deadline
-            repair_kwargs["insert_pos_cap"] = int(p.get("insert_pos_cap", 0) or 0)
-            new_order = REPAIR_OPS[r_idx](
-                remaining, removed, rng, inst, **repair_kwargs
-            )
+            repair_kwargs: dict = {"deadline": deadline}
+            if r_idx == 1:
+                repair_kwargs["k"] = p["regret_k"]
+            REPAIR_OPS[r_idx](cand, removed, rng, **repair_kwargs)
 
-            obj_new = _objective_from_order(inst, new_order)
+            # One compaction decode per iteration (left-shift / order invariant)
+            compacted = decode(inst, cand.order())
+            cand = _ScheduleState.from_solution(inst, compacted)
+            obj_new = cand.objective
 
             delta_obj = obj_new - obj_cur
             accept = False
@@ -542,11 +480,11 @@ class ALNS:
                 else:
                     psi = p["sigma3"]
 
-                cur_order = new_order
+                cur_state = cand
                 obj_cur = obj_new
                 if obj_new < obj_best:
                     obj_best = obj_new
-                    best_order = list(new_order)
+                    best_order = cand.order()
 
                 score_destroy[d_idx] += psi
                 score_repair[r_idx] += psi
