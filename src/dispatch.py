@@ -74,7 +74,17 @@ def _best_of(sol: Solution, warm: Solution, inst: Instance) -> Solution:
 
 
 _VALID_FORCE_TIERS = frozenset(
-    {None, "auto", "greedy", "cpsat", "alns", "tabu", "ga", "ga_tabu"}
+    {
+        None,
+        "auto",
+        "greedy",
+        "cpsat",
+        "alns",
+        "alns_tabu",
+        "tabu",
+        "ga",
+        "ga_tabu",
+    }
 )
 
 
@@ -97,17 +107,18 @@ def solve(
     policy_path : path or None
         Path to switch_policy.json. None or missing → fallback defaults.
     params_path : path or None
-        Path to alns_params.json. None or missing → fallback defaults.
+        Path to alns_params.json (plain ALNS / CP-SAT fallback). None or missing
+        → fallback defaults. Auto large-K uses ``config/alns_tabu_params.json``.
     exact_time_limit : float or None
         Time limit for CP-SAT. None → config ``cpsat_time_limit_sec`` (else budget_sec).
     alns_time_limit : float or None
-        Time limit for ALNS / Tabu / GA / hybrid. None → use policy budget_sec.
+        Time limit for ALNS / ALNS+Tabu / Tabu / GA / hybrid. None → policy budget_sec.
     seed : int
         Random seed for metaheuristics.
     force_tier : str or None
-        None/"auto" → size policy;
-        "greedy" | "cpsat" | "alns" | "tabu" | "ga" | "ga_tabu" → force that solver.
-        Auto never selects tabu/ga/ga_tabu.
+        None/"auto" → size policy (large K → alns_tabu);
+        "greedy" | "cpsat" | "alns" | "alns_tabu" | "tabu" | "ga" | "ga_tabu"
+        → force that solver. Auto never selects tabu/ga/ga_tabu.
     stop_event : threading.Event or None
         When set, cooperative cancel for CP-SAT (and ignored by greedy).
     """
@@ -115,7 +126,7 @@ def solve(
         raise ValueError(
             f"Unknown force_tier={force_tier!r}; "
             f"expected one of None, 'auto', 'greedy', 'cpsat', 'alns', "
-            f"'tabu', 'ga', 'ga_tabu'"
+            f"'alns_tabu', 'tabu', 'ga', 'ga_tabu'"
         )
 
     feasibility_precheck(inst)
@@ -216,8 +227,7 @@ def solve(
             warm_start=warm,
         )
         tier = "ga_tabu"
-    else:
-        # force_tier == "alns" or auto with K > threshold
+    elif force_tier == "alns":
         from src.solvers.alns import ALNS
 
         alns = ALNS(params=params)
@@ -228,6 +238,18 @@ def solve(
             warm_start=warm,
         )
         tier = "alns"
+    else:
+        # force_tier == "alns_tabu" or auto with K > threshold
+        from src.solvers.alns_tabu import HybridALNSTabu
+
+        hybrid = HybridALNSTabu()
+        sol = hybrid.solve(
+            inst,
+            time_limit_sec=alns_time_limit,
+            seed=seed,
+            warm_start=warm,
+        )
+        tier = "alns_tabu"
 
     validate(inst, sol)
     return _best_of(sol, warm, inst), tier

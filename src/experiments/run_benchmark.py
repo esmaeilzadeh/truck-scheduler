@@ -9,6 +9,7 @@ from pathlib import Path
 
 from src.model import Instance, Solution
 from src.solvers.alns import ALNS
+from src.solvers.alns_tabu import HybridALNSTabu
 from src.solvers.base import Solver
 from src.solvers.cpsat import CPSAT
 from src.solvers.ga import GeneticAlgorithm
@@ -30,6 +31,7 @@ def run_benchmark(
         solvers = [
             GreedyERDSPT(),
             ALNS(),
+            HybridALNSTabu(),
             TabuSearch(),
             GeneticAlgorithm(),
             HybridGATabu(),

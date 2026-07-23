@@ -38,7 +38,7 @@ def test_dispatch_picks_cpsat_for_small_k(tmp_path: Path):
     assert sol.objective(inst) <= g.objective(inst) + 1e-9
 
 
-def test_dispatch_picks_alns_for_large_k(tmp_path: Path):
+def test_dispatch_picks_alns_tabu_for_large_k(tmp_path: Path):
     policy = {
         "budget_sec": 2.0,
         "threshold_K": 5,
@@ -58,7 +58,7 @@ def test_dispatch_picks_alns_for_large_k(tmp_path: Path):
         seed=0,
     )
     validate(inst, sol)
-    assert tier == "alns"
+    assert tier == "alns_tabu"
     g = greedy_erd_spt(inst)
     assert sol.objective(inst) <= g.objective(inst) + 1e-9
 
@@ -226,6 +226,19 @@ def test_force_tier_ga_tabu():
     )
     validate(inst, sol)
     assert tier == "ga_tabu"
+
+
+def test_force_tier_alns_tabu():
+    inst = gen_instance(seed=9, M=3, N=3, G=2)
+    sol, tier = dispatch_solve(
+        inst,
+        policy_path=None,
+        params_path=None,
+        alns_time_limit=0.5,
+        force_tier="alns_tabu",
+    )
+    validate(inst, sol)
+    assert tier == "alns_tabu"
 
 
 def test_force_tier_invalid():

@@ -231,6 +231,14 @@ def _poll_background_solve(inst: Instance, compare_all: bool) -> bool:
             validate(inst, sol_a)
             results["alns"] = sol_a
 
+        with st.spinner("Running ALNS+Tabu Hybrid..."):
+            from src.solvers.alns_tabu import HybridALNSTabu
+
+            at = HybridALNSTabu()
+            sol_at = at.solve(inst, time_limit_sec=time_limit, seed=seed)
+            validate(inst, sol_at)
+            results["alns_tabu"] = sol_at
+
         with st.spinner("Running Tabu Search..."):
             t = TabuSearch()
             sol_t = t.solve(inst, time_limit_sec=time_limit, seed=seed)
@@ -311,6 +319,7 @@ def main():
                 "Auto (policy)",
                 "Greedy",
                 "ALNS",
+                "ALNS+Tabu Hybrid",
                 "Tabu Search",
                 "Genetic Algorithm",
                 "GA+Tabu Hybrid",
@@ -322,6 +331,7 @@ def main():
             "Auto (policy)": "auto",
             "Greedy": "greedy",
             "ALNS": "alns",
+            "ALNS+Tabu Hybrid": "alns_tabu",
             "Tabu Search": "tabu",
             "Genetic Algorithm": "ga",
             "GA+Tabu Hybrid": "ga_tabu",
