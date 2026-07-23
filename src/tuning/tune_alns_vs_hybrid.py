@@ -29,77 +29,43 @@ from src.solvers.ga_tabu import HybridGATabu
 from src.tuning.tune_alns import _INT_PARAMS as _BASE_INT_PARAMS
 from src.validate import validate
 
-_INT_PARAMS = set(_BASE_INT_PARAMS) | {"insert_pos_cap"}
+_INT_PARAMS = set(_BASE_INT_PARAMS)
 
 
-# Seed round-0 search with configs known to beat HybridGATabu in smoke probes.
+# Seed round-0 search with literature defaults and mild variants.
 ANCHOR_CONFIGS: list[dict] = [
     {
-        "rho_min": 0.01,
-        "rho_max": 0.05,
-        "lambda": 0.15,
-        "segment_length": 100,
-        "sigma1": 33,
-        "sigma2": 9,
-        "sigma3": 13,
-        "cooling": 0.99975,
-        "start_temp_ctrl": 0.05,
-        "regret_k": 2,
-        "d_wr": 3.0,
-        "q_cap": 1,
-        "insert_pos_cap": 8,
-        "max_iterations": DEFAULT_PARAMS["max_iterations"],
+        **DEFAULT_PARAMS,
     },
     {
-        "rho_min": 0.01,
-        "rho_max": 0.05,
-        "lambda": 0.18,
-        "segment_length": 80,
-        "sigma1": 40,
-        "sigma2": 12,
-        "sigma3": 8,
+        **DEFAULT_PARAMS,
+        "regret_k": 2,
         "cooling": 0.9995,
-        "start_temp_ctrl": 0.08,
-        "regret_k": 2,
         "d_wr": 2.0,
-        "q_cap": 1,
-        "insert_pos_cap": 12,
-        "max_iterations": DEFAULT_PARAMS["max_iterations"],
     },
     {
-        "rho_min": 0.02,
-        "rho_max": 0.08,
-        "lambda": 0.12,
-        "segment_length": 120,
-        "sigma1": 33,
-        "sigma2": 9,
-        "sigma3": 13,
-        "cooling": 0.9999,
-        "start_temp_ctrl": 0.04,
-        "regret_k": 3,
-        "d_wr": 3.0,
-        "q_cap": 2,
-        "insert_pos_cap": 10,
-        "max_iterations": DEFAULT_PARAMS["max_iterations"],
+        **DEFAULT_PARAMS,
+        "rho_max": 0.25,
+        "q_cap": 10,
+        "segment_length": 100,
     },
 ]
 
-# Large-K ranges: small q_cap is essential so ALNS gets enough iterations
-# to beat HybridGATabu within the 1.5x time envelope.
+# Ranges after schedule-based repair: q_cap=0 disables the cap.
 PARAM_RANGES: dict[str, tuple[float, float]] = {
-    "rho_min": (0.01, 0.15),
-    "rho_max": (0.02, 0.25),
+    "rho_min": (0.05, 0.20),
+    "rho_max": (0.20, 0.35),
     "lambda": (0.10, 0.25),
-    "segment_length": (50, 200),
+    "segment_length": (100, 200),
     "sigma1": (10, 50),
     "sigma2": (5, 25),
     "sigma3": (1, 20),
     "cooling": (0.995, 0.99999),
     "start_temp_ctrl": (0.01, 0.20),
+    "final_temp_ratio": (0.0005, 0.01),
     "regret_k": (2, 4),
     "d_wr": (1.0, 6.0),
-    "q_cap": (1, 4),
-    "insert_pos_cap": (8, 24),
+    "q_cap": (0, 30),
 }
 
 # Size buckets: (M, N) with K = M+N up to 800
@@ -111,8 +77,6 @@ DEFAULT_BUCKETS: list[tuple[int, int]] = [
 ]
 
 # Base wall budget B(K) for hybrid; ALNS gets 1.5 * B.
-# Calibrated so ALNS with small q_cap + insert_pos_cap can beat hybrid
-# through 400x400 (K=800) smoke.
 _BUDGET_BY_K: dict[int, float] = {
     100: 8.0,
     200: 12.0,
@@ -219,10 +183,10 @@ def _sample_config(rng: random.Random, ranges: dict[str, tuple[float, float]]) -
 
 
 def _bias_ranges_for_speed(
-    ranges: dict[str, tuple[float, float]],
+    ranges: dict[str, tuple[float, float]] | None = None,
 ) -> dict[str, tuple[float, float]]:
-    """Shrink destroy / q_cap / insert_pos_cap toward cheaper repairs."""
-    out = deepcopy(ranges)
+    """Shrink destroy / q_cap toward cheaper repairs (from base ranges)."""
+    out = deepcopy(ranges if ranges is not None else PARAM_RANGES)
     q_lo, q_hi = out["q_cap"]
     out["q_cap"] = (q_lo, max(q_lo, min(q_hi, (q_lo + q_hi) / 2)))
     r_lo, r_hi = out["rho_max"]
@@ -230,17 +194,14 @@ def _bias_ranges_for_speed(
     c_lo, c_hi = out["cooling"]
     # Faster cooling (lower values) exits exploration sooner under time caps
     out["cooling"] = (c_lo, max(c_lo, min(c_hi, (c_lo + c_hi) / 2)))
-    if "insert_pos_cap" in out:
-        p_lo, p_hi = out["insert_pos_cap"]
-        out["insert_pos_cap"] = (p_lo, max(p_lo, min(p_hi, (p_lo + p_hi) / 2)))
     return out
 
 
 def _bias_ranges_for_quality(
-    ranges: dict[str, tuple[float, float]],
+    ranges: dict[str, tuple[float, float]] | None = None,
 ) -> dict[str, tuple[float, float]]:
-    """Allow larger destroy / higher regret for better quality."""
-    out = deepcopy(ranges)
+    """Allow larger destroy / higher regret for better quality (from base ranges)."""
+    out = deepcopy(ranges if ranges is not None else PARAM_RANGES)
     q_lo, q_hi = out["q_cap"]
     mid = (q_lo + q_hi) / 2
     out["q_cap"] = (max(q_lo, mid), q_hi)
@@ -249,10 +210,6 @@ def _bias_ranges_for_quality(
     out["rho_max"] = (max(r_lo, mid_r), r_hi)
     rk_lo, rk_hi = out["regret_k"]
     out["regret_k"] = (max(rk_lo, (rk_lo + rk_hi) // 2), rk_hi)
-    if "insert_pos_cap" in out:
-        p_lo, p_hi = out["insert_pos_cap"]
-        mid_p = (p_lo + p_hi) / 2
-        out["insert_pos_cap"] = (max(p_lo, mid_p), p_hi)
     return out
 
 
@@ -564,22 +521,22 @@ def tune_loop(
             print("Holdout criteria met; stopping.")
             break
 
-        # Bias search ranges for next round
+        # Bias search ranges for next round (always from PARAM_RANGES — no ratchet)
         failing_speed = hold.median_time_ratio > max_time_ratio
         failing_quality = hold.win_rate < target_win_rate
         if failing_speed and not failing_quality:
-            ranges = _bias_ranges_for_speed(ranges)
+            ranges = _bias_ranges_for_speed(PARAM_RANGES)
             print("  bias -> speed")
         elif failing_quality and not failing_speed:
-            ranges = _bias_ranges_for_quality(ranges)
+            ranges = _bias_ranges_for_quality(PARAM_RANGES)
             print("  bias -> quality")
         elif failing_speed and failing_quality:
             # Prefer speed first so quality search stays inside the envelope
-            ranges = _bias_ranges_for_speed(ranges)
+            ranges = _bias_ranges_for_speed(PARAM_RANGES)
             print("  bias -> speed (both failing)")
         else:
             # Per-bucket miss only — mild quality nudge
-            ranges = _bias_ranges_for_quality(ranges)
+            ranges = _bias_ranges_for_quality(PARAM_RANGES)
             print("  bias -> quality (per-bucket)")
 
     assert best_cfg is not None

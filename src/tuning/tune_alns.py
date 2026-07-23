@@ -28,8 +28,8 @@ PARAM_RANGES = {
     "start_temp_ctrl": (0.01, 0.20),
     "regret_k": (2, 4),
     "d_wr": (1.0, 6.0),
-    # Cap destroy size so repairs stay cheap on large K (0 = uncapped)
-    "q_cap": (4, 40),
+    # Cap destroy size (0 = uncapped / use full rho range)
+    "q_cap": (0, 30),
 }
 
 # SPEC 6H.3 course-project light search (others frozen at DEFAULT_PARAMS)
