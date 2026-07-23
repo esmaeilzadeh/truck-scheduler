@@ -1,6 +1,6 @@
 {
-  "rho_min": 0.10,
-  "rho_max": 0.30,
+  "rho_min": 0.1,
+  "rho_max": 0.3,
   "lambda": 0.15,
   "segment_length": 150,
   "sigma1": 33,
@@ -10,6 +10,6 @@
   "start_temp_ctrl": 0.05,
   "regret_k": 3,
   "d_wr": 3.0,
-  "q_cap": 12,
+  "q_cap": 25,
   "max_iterations": 25000
 }

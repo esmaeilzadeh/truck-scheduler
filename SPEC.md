@@ -340,13 +340,19 @@ orderings.
 
 ### 5.3 Destroy operators (remove `q` ops from `π`)
 `q` drawn each iteration uniformly from `[q_min, q_max]` where
-`q_min = max(1, ceil(ρ_min · K))`, `q_max = max(q_min, ceil(ρ_max · K))`.
+`q_min = max(1, ceil(ρ_min · K))`, `q_max = max(q_min, ceil(ρ_max · K))`,
+then capped by `q_cap` when `q_cap > 0`.
 1. **Random removal** — remove `q` uniformly random ops.
 2. **Worst removal** — remove the `q` ops with the largest `w_k · start_k` contribution
    (highest cost first; add small randomization via a `p`-biased selection, exponent `d_wr`).
 3. **Related (Shaw) removal** — pick a seed op, remove the `q−1` most "related" ops, where
    relatedness `rel(a,b) = α·|r_a − r_b| + β·|p_a − p_b| + γ·[gate_a≠gate_b] + δ·|start_a − start_b|`
    (smaller = more related). Coefficients are fixed constants (`α=β=1, γ=T/4, δ=1`).
+4. **Block removal** — decode gate assignments, pick a gate with ≥2 ops, remove a contiguous
+   run of length `min(q, run)` in start-time order on that gate (falls back to random if no
+   eligible gate).
+5. **History removal** — track each op's best (lowest) start time seen in accepted solutions;
+   remove the `q` ops with largest `w_k · (start_k − best_start_seen_k)`.
 
 Removed ops go to a "removal bank"; remaining ops keep relative order in `π`.
 
@@ -356,11 +362,12 @@ Removed ops go to a "removal bank"; remaining ops keep relative order in `π`.
 2. **Regret-k insertion** (`k=2` or `3`) — for each removed op compute the best `k`
    insertion costs; insert the op with the **largest regret**
    `sum_{m=2..k}(cost_m − cost_1)` first; repeat until bank empty.
+3. **Noised greedy insertion** — same as greedy, but each position cost is multiplied by
+   `Uniform(1−η, 1+η)` (`noise_level` = `η`) before choosing the best slot.
 
-(To keep decode cost manageable, an incremental insertion cost may be approximated by
-inserting into `π` and decoding once per candidate position; `K` is bounded by profiling
-so full re-decode is acceptable. Optimize later with NumPy/Numba if profiling shows a
-bottleneck.)
+Insertion costs use incremental prefix decode (exact suffix re-decode per candidate). When
+`screen_top > 0`, only the best `screen_top` positions by cheap proxy (`w·t` of the inserted
+op on the prefix state) are exact-decoded; others are treated as `+∞`.
 
 ### 5.5 Adaptive operator selection (Ropke–Pisinger)
 - Maintain weights `ω_i` (destroy) and `ω'_j` (repair), all init `1.0`.
@@ -381,6 +388,9 @@ bottleneck.)
 - `Temp0` set so a solution `start_temp_ctrl` (e.g. 5%) worse than initial is accepted with
   prob 0.5: `Temp0 = −(0.05 · obj(x0)) / ln(0.5)`.
 - Always update `x_best` when improved.
+- **Reheat on stagnation:** if no global-best improvement for `stagnation_iters` iterations,
+  set `Temp = Temp0 · reheat_factor`, reset the current solution to `x_best`, and continue.
+  Report `reheat_count` in solution meta.
 
 ### 5.7 Stopping criterion
 Stop when **either** `max_iterations` reached **or** `time_limit_sec` elapsed (whichever
@@ -405,6 +415,11 @@ accepts `seed`. Report `iterations`, final `gap_pct` (vs best known if available
 | regret depth | `k` | 3 | {2, 3, 4} |
 | worst-removal bias | `d_wr` | 3 | [1, 6] |
 | max iterations | `max_iterations` | 25000 | fixed per time budget |
+| destroy size cap | `q_cap` | 25 | [4, 40] (0 = uncapped) |
+| insertion screen | `screen_top` | 5 | [0, 10] (0 = exact all) |
+| noised-greedy η | `noise_level` | 0.02 | [0.0, 0.10] |
+| SA stagnation reheat | `stagnation_iters` | 2000 | [500, 5000] |
+| reheat temp factor | `reheat_factor` | 0.5 | [0.25, 1.0] |
 
 Defaults come from Ropke & Pisinger (2006) and are the fallback if no tuning is run.
 

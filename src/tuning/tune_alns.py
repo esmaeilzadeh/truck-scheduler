@@ -30,6 +30,10 @@ PARAM_RANGES = {
     "d_wr": (1.0, 6.0),
     # Cap destroy size so repairs stay cheap on large K (0 = uncapped)
     "q_cap": (4, 40),
+    "screen_top": (0, 10),
+    "noise_level": (0.0, 0.10),
+    "stagnation_iters": (500, 5000),
+    "reheat_factor": (0.25, 1.0),
 }
 
 _INT_PARAMS = {
@@ -39,6 +43,8 @@ _INT_PARAMS = {
     "sigma2",
     "sigma3",
     "q_cap",
+    "screen_top",
+    "stagnation_iters",
 }
 
 
