@@ -465,6 +465,10 @@ class ALNS:
             destroy_kwargs = {"d_wr": p["d_wr"]} if d_idx == 1 else {}
             removed = DESTROY_OPS[d_idx](cand, q, rng, **destroy_kwargs)
 
+            # Left-shift remaining ops so repair insertions see contiguous gaps
+            if removed:
+                cand = _ScheduleState.from_solution(inst, decode(inst, cand.order()))
+
             if _deadline_hit(deadline):
                 break
 
