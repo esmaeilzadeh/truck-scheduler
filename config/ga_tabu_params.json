@@ -1,12 +1,12 @@
 {
-  "population_size": 30,
+  "population_size": 54,
   "elite_count": 2,
   "tournament_k": 3,
   "crossover_rate": 0.9,
-  "mutation_rate": 0.2,
+  "mutation_rate": 0.07758006932746037,
   "max_generations": 3000,
-  "local_search_rate": 0.3,
-  "local_tabu_iters": 80,
+  "local_search_rate": 0.16241308142660468,
+  "local_tabu_iters": 116,
   "local_neighborhood_size": 20,
   "tabu_tenure": 7,
   "swap_prob": 0.5
