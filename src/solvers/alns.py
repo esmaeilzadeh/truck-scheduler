@@ -10,8 +10,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.model import Instance, Solution, feasibility_precheck
-from src.solvers.greedy import _place_op, greedy_erd_spt
+from src.model import Infeasible, Instance, Operation, Solution, feasibility_precheck
+from src.solvers.greedy import _place_op, earliest_start, greedy_erd_spt
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +51,100 @@ def _objective_from_order(inst: Instance, order: list[int]) -> float:
         total += op.w * t
 
     return total
+
+
+# ---------------------------------------------------------------------------
+# Schedule state (incremental destroy / repair evaluation)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _ScheduleState:
+    """Decoded schedule with incremental remove / insert for ALNS moves."""
+
+    inst: Instance
+    ops_by_uid: dict[int, Operation]
+    gate_intervals: dict[int, list[tuple[int, int, int]]]
+    starts: dict[int, int]
+    gates: dict[int, int]
+    objective: float
+
+    @classmethod
+    def from_solution(cls, inst: Instance, sol: Solution) -> _ScheduleState:
+        ops_by_uid = {op.uid: op for op in inst.ops}
+        gate_intervals: dict[int, list[tuple[int, int, int]]] = {
+            g: [] for g in range(1, inst.G + 1)
+        }
+        starts = dict(sol.starts)
+        gates = dict(sol.gates)
+        objective = 0.0
+        for uid, t in starts.items():
+            op = ops_by_uid[uid]
+            g = gates[uid]
+            bisect.insort(gate_intervals[g], (t, t + op.p, uid))
+            objective += op.w * t
+        return cls(
+            inst=inst,
+            ops_by_uid=ops_by_uid,
+            gate_intervals=gate_intervals,
+            starts=starts,
+            gates=gates,
+            objective=objective,
+        )
+
+    @classmethod
+    def from_order(cls, inst: Instance, order: list[int]) -> _ScheduleState:
+        return cls.from_solution(inst, decode(inst, order))
+
+    def copy(self) -> _ScheduleState:
+        return _ScheduleState(
+            inst=self.inst,
+            ops_by_uid=self.ops_by_uid,
+            gate_intervals={
+                g: list(intervals) for g, intervals in self.gate_intervals.items()
+            },
+            starts=dict(self.starts),
+            gates=dict(self.gates),
+            objective=self.objective,
+        )
+
+    def remove(self, uid: int) -> None:
+        t = self.starts.pop(uid)
+        g = self.gates.pop(uid)
+        op = self.ops_by_uid[uid]
+        interval = (t, t + op.p, uid)
+        intervals = self.gate_intervals[g]
+        idx = bisect.bisect_left(intervals, interval)
+        if idx >= len(intervals) or intervals[idx] != interval:
+            raise KeyError(f"interval for uid {uid} not found on gate {g}")
+        intervals.pop(idx)
+        self.objective -= op.w * t
+
+    def best_insertion(self, op: Operation) -> tuple[float, int, int]:
+        """Cheapest insertion: (delta_obj = w*t, start t, gate g)."""
+        best: tuple[float, int, int] | None = None
+        for g in range(1, self.inst.G + 1):
+            t = earliest_start(
+                self.gate_intervals[g], op.r, op.p, self.inst.T,
+            )
+            if t is None:
+                continue
+            cost = op.w * t
+            if best is None or (cost, t, g) < best:
+                best = (cost, t, g)
+        if best is None:
+            raise Infeasible(f"Cannot place operation {op.uid}")
+        return best
+
+    def insert(self, uid: int, t: int, g: int) -> None:
+        op = self.ops_by_uid[uid]
+        bisect.insort(self.gate_intervals[g], (t, t + op.p, uid))
+        self.starts[uid] = t
+        self.gates[uid] = g
+        self.objective += op.w * t
+
+    def order(self) -> list[int]:
+        """Canonical permutation: uids sorted by (start, gate)."""
+        return sorted(self.starts.keys(), key=lambda u: (self.starts[u], self.gates[u]))
 
 
 def _deadline_hit(deadline: float | None) -> bool:
