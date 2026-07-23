@@ -5,7 +5,8 @@
 **Goal of this document:** Give a complete, unambiguous, build-ready specification for a
 **3-tier solver** for the gate-scheduling problem, including the exact algorithms,
 the offline hyperparameter-tuning procedure, the offline tier-switching procedure,
-and **compare metaheuristics** (Tabu, GA, GA+Tabu hybrid) used for reporting only.
+and **compare metaheuristics** (Tabu, GA, GA+Tabu hybrid) used for reporting only, plus
+an **ALNS+Tabu** memetic Tier-2 path selected by Auto on large instances.
 
 ---
 
@@ -18,8 +19,11 @@ We implement three interchangeable solvers ("tiers") behind one uniform interfac
 | Tier | Solver | Role | When used |
 |------|--------|------|-----------|
 | **Tier 1** | **OR-Tools CP-SAT** (exact) | Proven optimum | Small instances (`M+N ≤ τ`) |
-| **Tier 2** | **ALNS** (metaheuristic) | Near-optimal, scalable | Large instances (`M+N > τ`) |
-| **Tier 3** | **Greedy ERD/SPT** (list scheduler) | Baseline **and** warm start for ALNS | Always (internally) |
+| **Tier 2** | **ALNS+Tabu** (memetic metaheuristic) | Near-optimal, scalable | Large instances (`M+N > τ`) |
+| **Tier 3** | **Greedy ERD/SPT** (list scheduler) | Baseline **and** warm start | Always (internally) |
+
+Plain **ALNS** (Section 5) remains UI-/`force_tier`-selectable. Auto large-K uses
+**ALNS+Tabu** (Section 4B.4).
 
 The **dispatcher** selects Tier 1 vs Tier 2 using a threshold `τ` (and optionally `T`)
 that is fixed **once, offline** by a profiling study (Section 7). At solve time the
@@ -99,7 +103,7 @@ Minimize
 ```json
 {
   "instance_id": "inst_0001",
-  "solver": "cpsat|alns|greedy|tabu|ga|ga_tabu",
+  "solver": "cpsat|alns|alns_tabu|greedy|tabu|ga|ga_tabu",
   "objective": 123.0,
   "is_optimal": true,
   "proven_optimal": true,
@@ -161,31 +165,36 @@ truck_scheduling/
     solvers/
       base.py                  # Solver interface (3.1)
       greedy.py                # Tier 3 (Section 4)
-      alns.py                  # Tier 2 (Section 5)
+      alns.py                  # Tier 2 core ALNS (Section 5)
+      alns_tabu.py             # Tier 2 Auto path: ALNS+Tabu (Section 4B.4)
       cpsat.py                 # Tier 1 (Section 4A)
       tabu.py                  # Compare: Tabu Search (Section 4B)
       ga.py                    # Compare: Genetic Algorithm (Section 4B)
       ga_tabu.py               # Compare: GA+Tabu hybrid (Section 4B)
     dispatch.py                # tier selection at runtime (Section 8)
     tuning/
-      tune_alns.py             # offline hyperparameter search (Section 6-tuning / 6H)
+      tune_alns.py             # offline ALNS hyperparameter search (Section 6H)
+      tune_alns_tabu.py        # offline ALNS+Tabu random search
+      tune_ga_tabu.py          # offline GA+Tabu random search
+      random_search.py         # shared TunerSpec / random-search framework
       profile_switch.py        # offline tier-threshold study (Section 7)
     experiments/
       run_benchmark.py         # compares solvers, produces tables/plots (Section 9)
     ui/
       app.py                   # Streamlit UI (Section 10)
   config/
-    alns_params.json           # tuned hyperparameters (output of tuning)
+    alns_params.json           # tuned ALNS hyperparameters
+    alns_tabu_params.json      # tuned ALNS+Tabu hyperparameters
     switch_policy.json         # tuned threshold τ + cpsat_time_limit_sec
     tabu_params.json           # Tabu defaults
     ga_params.json             # GA defaults
-    ga_tabu_params.json        # hybrid defaults
+    ga_tabu_params.json        # GA+Tabu hybrid defaults
   data/
     instances/                 # generated instances
     results/                   # solver outputs, benchmark CSVs, plots
   tests/
     test_validate.py test_greedy.py test_cpsat_small.py test_alns.py
-    test_tabu.py test_ga.py test_ga_tabu.py test_dispatch.py
+    test_alns_tabu.py test_tabu.py test_ga.py test_ga_tabu.py test_dispatch.py
 ```
 
 ### 3.1 Uniform solver interface
@@ -195,9 +204,9 @@ class Solver(Protocol):
     def solve(self, inst: Instance, *, time_limit_sec: float | None = None,
               seed: int | None = None, warm_start: Solution | None = None) -> Solution: ...
 ```
-All three tiers **and** the compare solvers (Tabu, GA, GA+Tabu) implement this.
-The dispatcher and experiments depend only on this interface, so solvers are
-interchangeable and directly comparable.
+All three tiers **and** the metaheuristics (Tabu, GA, GA+Tabu, ALNS+Tabu, plain ALNS)
+implement this. The dispatcher and experiments depend only on this interface, so solvers
+are interchangeable and directly comparable.
 
 ---
 
@@ -284,19 +293,23 @@ required.)
 
 ---
 
-## 4B. Compare metaheuristics (Tabu, GA, GA+Tabu) — reporting only
+## 4B. Metaheuristics (Tabu, GA, GA+Tabu, ALNS+Tabu)
 
-These solvers are **not** selected by Auto. Encoding matches ALNS Section 5.1:
-permutation of uids + `decode` / objective via greedy earliest-start. Init order =
-Tier-3 ERD/SPT. Never return worse than the greedy warm start. Infeasible permutations
-(under a tight horizon) are rejected / scored as `+∞`.
+Encoding matches ALNS Section 5.1: permutation of uids + `decode` / objective via greedy
+earliest-start. Init order = Tier-3 ERD/SPT (or warm-start order). Never return worse than
+the greedy / warm-start baseline. Infeasible permutations (under a tight horizon) are
+rejected / scored as `+∞`.
+
+**Auto:** selects **ALNS+Tabu** (§4B.4) when `K > threshold_K`.
+**Reporting-only (never Auto):** Tabu, GA, GA+Tabu (§4B.1–4B.3) — UI / `force_tier` only.
+Plain ALNS (§5) remains forceable via `force_tier="alns"`.
 
 ### 4B.1 Tabu Search (`src/solvers/tabu.py`, `name="tabu"`)
 - Neighborhood each iteration: random sample of **swap** and **relocate** moves
   (`swap_prob`, `neighborhood_size`).
 - Tabu list of move keys with tenure `tabu_tenure`; **aspiration** if a move improves
   the global best.
-- Shared kernel `improve_order(...)` used by standalone Tabu and by the hybrid.
+- Shared kernel `improve_order(...)` used by standalone Tabu and by the hybrids.
 - Stop on `max_iterations` or `time_limit_sec`. Config: `config/tabu_params.json`
   (defaults: tenure 7, neighborhood 40, max_iterations 20000, swap_prob 0.5).
 
@@ -315,6 +328,15 @@ probability `local_search_rate` (via `improve_order`). Config: `config/ga_tabu_p
 (defaults: pop 30, elite 2, tournament 3, crossover 0.9, mutation 0.2,
 max_generations 3000, local_search_rate 0.3, local_tabu_iters 80,
 local_neighborhood_size 20, tabu_tenure 7, swap_prob 0.5).
+
+### 4B.4 Hybrid ALNS+Tabu (`src/solvers/alns_tabu.py`, `name="alns_tabu"`)
+Memetic algorithm used as the **Auto Tier-2** path: schedule-based ALNS outer loop
+(Section 5) for large-neighborhood exploration; after an accepted ALNS move, run a
+**short Tabu** polish via `improve_order` (a) always on a new global best, and
+(b) with probability `local_search_rate` on other accepted moves. Polished orders rebuild
+the schedule state. Config: `config/alns_tabu_params.json` (ALNS knobs from §5.9 plus
+defaults: local_search_rate 0.15, local_tabu_iters 40, local_neighborhood_size 20,
+tabu_tenure 7, swap_prob 0.5). Offline light tune via `src/tuning/tune_alns_tabu.py`.
 
 ---
 
@@ -519,10 +541,10 @@ Write to `config/switch_policy.json`:
   "threshold_K": 25,
   "T_cap": null,
   "safety_margin_steps": 1,
-  "notes": "Manual Auto policy: CP-SAT when K=M+N<=25, ALNS when K>25; cpsat_time_limit_sec=10s"
+  "notes": "Manual Auto policy: CP-SAT when K=M+N<=25, ALNS+Tabu when K>25; cpsat_time_limit_sec=10s"
 }
 ```
-- `budget_sec` — Auto ALNS / shared UI default for metaheuristics.
+- `budget_sec` — Auto ALNS+Tabu / shared UI default for metaheuristics.
 - `cpsat_time_limit_sec` — default wall budget for forced / exact CP-SAT (UI default when
   Algorithm = CP-SAT).
 Also emit the **crossover plot** (CP-SAT vs ALNS runtime & quality vs `K`) to
@@ -537,7 +559,8 @@ def solve(inst, policy=load("config/switch_policy.json"),
           params=load("config/alns_params.json"),
           exact_time_limit=None, alns_time_limit=None, seed=0,
           force_tier=None, stop_event=None):
-    # force_tier in {None/"auto", "greedy", "cpsat", "alns", "tabu", "ga", "ga_tabu"}
+    # force_tier in {None/"auto", "greedy", "cpsat", "alns", "alns_tabu",
+    #                "tabu", "ga", "ga_tabu"}
     feasibility_precheck(inst)
     warm = GreedyERDSPT().solve(inst)
     if force_tier == "greedy":
@@ -559,12 +582,14 @@ def solve(inst, policy=load("config/switch_policy.json"),
         return best_of(GeneticAlgorithm().solve(...), warm), "ga"
     if force_tier == "ga_tabu":
         return best_of(HybridGATabu().solve(...), warm), "ga_tabu"
-    # force_tier == "alns" or auto with K > threshold
-    return best_of(ALNS(...).solve(...), warm), "alns"
+    if force_tier == "alns":
+        return best_of(ALNS(...).solve(...), warm), "alns"
+    # force_tier == "alns_tabu" or auto with K > threshold
+    return best_of(HybridALNSTabu().solve(...), warm), "alns_tabu"
 ```
 
 - **Primary Auto decision is O(1)** (size comparison), no timeout paid.
-- Auto never selects `tabu` / `ga` / `ga_tabu`.
+- Auto large-K selects `alns_tabu`. Auto never selects `tabu` / `ga` / `ga_tabu`.
 - Forced CP-SAT: no ALNS fallback; return CP-SAT incumbent as-is.
 - `best_of` keeps metaheuristic Auto/ALNS/compare paths never worse than greedy.
 
@@ -574,13 +599,13 @@ def solve(inst, policy=load("config/switch_policy.json"),
 
 Produce, on the TEST suite:
 1. **Comparison table** per instance and aggregated: columns
-   `{greedy, alns, tabu, ga, ga_tabu, cpsat}` ×
+   `{greedy, alns, alns_tabu, tabu, ga, ga_tabu, cpsat}` ×
    `{objective, runtime_sec, gap_pct_vs_optimum}`. `gap_pct = (obj − opt)/opt · 100`
    where `opt` = CP-SAT optimum when available.
-2. **Crossover plot** (from Section 7): runtime vs `K`, CP-SAT vs ALNS (log y-axis).
+2. **Crossover plot** (from Section 7): runtime vs `K`, CP-SAT vs ALNS/ALNS+Tabu (log y-axis).
 3. **ALNS convergence plot**: best objective vs iteration for a few representative instances.
 4. **Ablations** (optional): greedy variants; ALNS with/without each operator; tuned vs
-   default `θ`; Tabu vs GA vs hybrid.
+   default `θ`; Tabu vs GA vs hybrids.
 All outputs to `data/results/` as CSV + PNG/HTML.
 
 ---
@@ -590,12 +615,12 @@ All outputs to `data/results/` as CSV + PNG/HTML.
 Centerpiece = **color-coded Gantt chart**. Requirements:
 - **Inputs panel:** sliders/fields for `M, N, T, G, w1, w2`, seed; button "Generate";
   or upload an instance JSON. Button "Solve".
-- **Algorithm select:** Auto (policy) | Greedy | ALNS | Tabu Search | Genetic Algorithm |
-  GA+Tabu Hybrid | CP-SAT. When not Auto, run only the chosen solver.
+- **Algorithm select:** Auto (policy) | Greedy | ALNS | ALNS+Tabu Hybrid | Tabu Search |
+  Genetic Algorithm | GA+Tabu Hybrid | CP-SAT. When not Auto, run only the chosen solver.
 - **Time limit:** defaults from `config/switch_policy.json`
   (`cpsat_time_limit_sec` when CP-SAT selected; `budget_sec` otherwise).
-- **Compare all solvers** (Auto only): also run greedy, ALNS, Tabu, GA, hybrid, CP-SAT
-  side by side.
+- **Compare all solvers** (Auto only): also run greedy, ALNS, ALNS+Tabu, Tabu, GA,
+  GA+Tabu, CP-SAT side by side.
 - **CP-SAT / Auto async:** Stop button cooperatively cancels CP-SAT via `StopSearch`.
 - **Gantt chart:** Y-axis = gates `1..G`; X-axis = time `1..T`; each op a horizontal bar
   `[start, start+p)`. **Deliveries and pickups in two distinct colorblind-safe colors**
@@ -622,10 +647,10 @@ Fallback if time is short: a **Jupyter notebook** rendering the same Gantt + tab
   weights; stop_event.
 - `test_alns.py`: ALNS ≤ greedy objective (never worse than warm start); reproducible with
   fixed seed; feasibility on many random instances.
-- `test_tabu.py` / `test_ga.py` / `test_ga_tabu.py`: never worse than greedy; seed
-  reproducibility; feasibility; time-limit respect; small-instance obj ≥ CP-SAT.
-- `test_dispatch.py`: dispatcher picks correct tier per policy; `force_tier` for
-  greedy/cpsat/alns/tabu/ga/ga_tabu; forced CP-SAT never returns `alns_fallback`.
+- `test_alns_tabu.py` / `test_tabu.py` / `test_ga.py` / `test_ga_tabu.py`: never worse than
+  greedy; seed reproducibility; feasibility; time-limit respect; small-instance obj ≥ CP-SAT.
+- `test_dispatch.py`: dispatcher picks `alns_tabu` for large K under Auto; `force_tier` for
+  greedy/cpsat/alns/alns_tabu/tabu/ga/ga_tabu; forced CP-SAT never returns `alns_fallback`.
 - **Cross-check:** on small instances, metaheuristic objs ≥ `cpsat.obj` (optimum is a
   lower bound) and `greedy.obj ≥ cpsat.obj`.
 
@@ -639,11 +664,13 @@ Fallback if time is short: a **Jupyter notebook** rendering the same Gantt + tab
 - [x] Tier 1 CP-SAT (optional-interval model, weight scaling, warm start, proven-optimal,
       stop/timeout).
 - [x] Tier 2 ALNS (destroy/repair operators, adaptive weights, SA acceptance, seeds).
-- [x] Compare solvers: Tabu Search, Genetic Algorithm, GA+Tabu hybrid (Section 4B).
+- [x] Tier 2 Auto path: ALNS+Tabu hybrid (Section 4B.4) + `tune_alns_tabu.py`.
+- [x] Compare solvers: Tabu Search, Genetic Algorithm, GA+Tabu hybrid (Section 4B.1–3).
 - [x] `config/alns_params.json` from tuning (Section 6H) + tuning log.
+- [x] `config/alns_tabu_params.json` from light ALNS+Tabu tune + tuning log.
 - [x] `config/switch_policy.json` from profiling (Section 7) + `cpsat_time_limit_sec`.
 - [x] `config/tabu_params.json`, `ga_params.json`, `ga_tabu_params.json`.
-- [x] Dispatcher with `force_tier` (Section 8).
+- [x] Dispatcher with `force_tier` including `alns_tabu`; Auto large-K → `alns_tabu` (Section 8).
 - [x] Benchmark + plots (Section 9).
 - [x] Streamlit UI with Gantt, algorithm select, compare-all, Stop, downloads (Section 10).
 - [x] Tests (Section 11), all passing.
@@ -654,11 +681,12 @@ Fallback if time is short: a **Jupyter notebook** rendering the same Gantt + tab
 ## 13. Defaults if you skip tuning/profiling (safe fallbacks)
 
 - ALNS params: literature defaults in Section 5.9 (or tuned file if present).
-- Switch threshold: `threshold_K = 25`, `T_cap = null`, `budget_sec` for ALNS,
+- ALNS+Tabu params: Section 4B.4 defaults (or tuned `config/alns_tabu_params.json`).
+- Switch threshold: `threshold_K = 25`, `T_cap = null`, `budget_sec` for ALNS/ALNS+Tabu,
   **`cpsat_time_limit_sec = 10`** for forced/exact CP-SAT, with Auto ALNS fall-back when
-  CP-SAT does not prove optimality.
-- Tabu / GA / hybrid: defaults in Section 4B config files (hand-chosen starting points;
-  not offline-tuned).
+  CP-SAT does not prove optimality (small-K path). Auto large-K uses ALNS+Tabu.
+- Tabu / GA / GA+Tabu: defaults in Section 4B.1–4B.3 config files (hand-chosen starting
+  points; offline-tuned when a tune run has been performed).
 - Weights: `w1 = w2 = 1`.
 
 These make the system runnable end-to-end before the offline studies are done; the studies
