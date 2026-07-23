@@ -228,44 +228,4 @@ def solve(
         tier = "alns"
 
     validate(inst, sol)
-    # #region agent log
-    try:
-        import json as _json
-        import time as _time
-        from pathlib import Path as _Path
-
-        _obj_sol = sol.objective(inst)
-        _obj_warm = warm.objective(inst)
-        _chosen = sol if _obj_sol <= _obj_warm else warm
-        with _Path(
-            "/home/mohamad/Projects/UNI/algorithms/project/truck_scheduling/"
-            ".cursor/debug-172fe7.log"
-        ).open("a", encoding="utf-8") as _f:
-            _f.write(
-                _json.dumps(
-                    {
-                        "sessionId": "172fe7",
-                        "runId": "pre-fix",
-                        "hypothesisId": "D",
-                        "location": "dispatch.py:solve:best_of",
-                        "message": "dispatch best-of greedy guard",
-                        "data": {
-                            "tier": tier,
-                            "K": len(inst.ops),
-                            "obj_sol": _obj_sol,
-                            "obj_warm": _obj_warm,
-                            "chose_warm_greedy": _chosen is warm
-                            and _obj_sol > _obj_warm,
-                            "alns_meta": getattr(sol, "meta", None),
-                            "sol_runtime_sec": getattr(sol, "runtime_sec", None),
-                        },
-                        "timestamp": int(_time.time() * 1000),
-                    },
-                    default=str,
-                )
-                + "\n"
-            )
-    except OSError:
-        pass
-    # #endregion
     return _best_of(sol, warm, inst), tier

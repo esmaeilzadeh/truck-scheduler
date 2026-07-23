@@ -13,32 +13,6 @@ from pathlib import Path
 from src.model import Instance, Solution, feasibility_precheck
 from src.solvers.greedy import _place_op, greedy_erd_spt
 
-# #region agent log
-_DEBUG_LOG_PATH = Path(
-    "/home/mohamad/Projects/UNI/algorithms/project/truck_scheduling/"
-    ".cursor/debug-172fe7.log"
-)
-
-
-def _dbg(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    try:
-        payload = {
-            "sessionId": "172fe7",
-            "runId": "pre-fix",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, default=str) + "\n")
-    except OSError:
-        pass
-
-
-# #endregion
-
 
 # ---------------------------------------------------------------------------
 # Permutation decoder (Section 5.1 / 5.2)
@@ -428,40 +402,9 @@ class ALNS:
 
         max_iter = p["max_iterations"]
         iterations = 0
-        # #region agent log
-        _improvements = 0
-        _deadline_breaks = 0
-        _accepted = 0
-        _dbg(
-            "A,B",
-            "alns.py:solve:start",
-            "ALNS start",
-            {
-                "K": K,
-                "T": inst.T,
-                "G": inst.G,
-                "time_limit_sec": time_limit_sec,
-                "q_min": q_min,
-                "q_max": q_max,
-                "q_cap": q_cap,
-                "obj_greedy": obj_greedy,
-                "obj_cur": obj_cur,
-                "init_equals_greedy_obj": abs(obj_cur - obj_greedy) < 1e-9,
-            },
-        )
-        # #endregion
 
         for it in range(max_iter):
             if _deadline_hit(deadline):
-                # #region agent log
-                _deadline_breaks += 1
-                _dbg(
-                    "A",
-                    "alns.py:solve:loop_deadline",
-                    "break at loop head",
-                    {"it": it, "elapsed": time.perf_counter() - t0},
-                )
-                # #endregion
                 break
 
             iterations = it + 1
@@ -476,29 +419,14 @@ class ALNS:
             )
 
             if _deadline_hit(deadline):
-                # #region agent log
-                _deadline_breaks += 1
-                _dbg(
-                    "A",
-                    "alns.py:solve:post_destroy_deadline",
-                    "break after destroy",
-                    {"it": it, "q": q, "elapsed": time.perf_counter() - t0},
-                )
-                # #endregion
                 break
 
             repair_kwargs = {"k": p["regret_k"]} if r_idx == 1 else {}
             repair_kwargs["deadline"] = deadline
             repair_kwargs["insert_pos_cap"] = int(p.get("insert_pos_cap", 0) or 0)
-            # #region agent log
-            _t_rep = time.perf_counter()
-            # #endregion
             new_order = REPAIR_OPS[r_idx](
                 remaining, removed, rng, inst, **repair_kwargs
             )
-            # #region agent log
-            _rep_sec = time.perf_counter() - _t_rep
-            # #endregion
 
             obj_new = _objective_from_order(inst, new_order)
 
@@ -513,9 +441,6 @@ class ALNS:
             # Scoring only for accepted moves (SPEC 5.5)
             psi = 0
             if accept:
-                # #region agent log
-                _accepted += 1
-                # #endregion
                 if obj_new < obj_best:
                     psi = p["sigma1"]
                 elif obj_new < obj_cur:
@@ -528,36 +453,9 @@ class ALNS:
                 if obj_new < obj_best:
                     obj_best = obj_new
                     best_order = list(new_order)
-                    # #region agent log
-                    _improvements += 1
-                    # #endregion
 
                 score_destroy[d_idx] += psi
                 score_repair[r_idx] += psi
-
-            # #region agent log
-            if it < 5 or (it + 1) % 50 == 0:
-                _dbg(
-                    "B,E",
-                    "alns.py:solve:iter",
-                    "iteration detail",
-                    {
-                        "it": it,
-                        "d_idx": d_idx,
-                        "r_idx": r_idx,
-                        "q": q,
-                        "repair_sec": round(_rep_sec, 4),
-                        "obj_new": obj_new,
-                        "obj_cur": obj_cur,
-                        "obj_best": obj_best,
-                        "accept": accept,
-                        "elapsed": round(time.perf_counter() - t0, 4),
-                        "hit_deadline_during_repair": (
-                            deadline is not None and _t_rep + _rep_sec >= deadline
-                        ),
-                    },
-                )
-            # #endregion
 
             use_destroy[d_idx] += 1
             use_repair[r_idx] += 1
@@ -584,9 +482,7 @@ class ALNS:
         sol = decode(inst, best_order)
 
         # Never worse than greedy warm start
-        fell_back_to_greedy = False
         if obj_best > obj_greedy:
-            fell_back_to_greedy = True
             sol = Solution(
                 starts=dict(greedy_sol.starts),
                 gates=dict(greedy_sol.gates),
@@ -596,26 +492,6 @@ class ALNS:
         gap_pct = 0.0
         if obj_greedy > 0:
             gap_pct = max(0.0, (obj_best - obj_greedy) / obj_greedy * 100)
-
-        # #region agent log
-        _dbg(
-            "C,D",
-            "alns.py:solve:end",
-            "ALNS end",
-            {
-                "iterations": iterations,
-                "improvements": _improvements,
-                "accepted": _accepted,
-                "deadline_breaks": _deadline_breaks,
-                "runtime_sec": round(runtime, 4),
-                "obj_best": obj_best,
-                "obj_greedy": obj_greedy,
-                "fell_back_to_greedy": fell_back_to_greedy,
-                "returned_same_as_greedy": abs(obj_best - obj_greedy) < 1e-9,
-                "gap_pct": gap_pct,
-            },
-        )
-        # #endregion
 
         sol.proven_optimal = False
         sol.runtime_sec = runtime
