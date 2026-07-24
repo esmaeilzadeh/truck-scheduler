@@ -39,8 +39,19 @@ Memetic algorithm used as the **Auto Tier-2** path: schedule-based ALNS outer lo
 (Section 5) for large-neighborhood exploration; after an accepted ALNS move, run a
 **short Tabu** polish via `improve_order` (a) always on a new global best, and
 (b) with probability `local_search_rate` on other accepted moves. Polished orders rebuild
-the schedule state. Config: `config/alns_tabu_params.json` (ALNS knobs from §5.9 plus
-defaults: local_search_rate 0.15, local_tabu_iters 40, local_neighborhood_size 20,
-tabu_tenure 7, swap_prob 0.5). Offline light tune via `src/tuning/tune_alns_tabu.py`.
+the schedule state.
+
+**Polish wall-time gate:** when `time_limit_sec` is set, cumulative time spent in Tabu
+polish is capped at `local_search_budget_frac × time_limit_sec` (default **0.15**). Each
+polish call also gets a per-call deadline of
+`min(global_deadline, now + remaining_polish_budget)`. Further polish is skipped once the
+cumulative budget is exhausted so ALNS keeps most of the wall clock on medium/large `K`.
+With no time limit, the frac gate is disabled.
+
+Config: `config/alns_tabu_params.json` (ALNS knobs from §5.9 plus defaults:
+`local_search_rate` 0.15, `local_tabu_iters` 40, `local_neighborhood_size` 20,
+`tabu_tenure` 7, `swap_prob` 0.5, `local_search_budget_frac` 0.15, `q_cap` 0). Offline
+light tune via `src/tuning/tune_alns_tabu.py` (searches polish knobs / `rho_max` /
+`local_search_budget_frac`; keeps `q_cap` frozen at 0).
 
 ---
