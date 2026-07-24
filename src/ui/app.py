@@ -97,6 +97,8 @@ def _plot_gantt(inst: Instance, sol: Solution):
             va="center",
             fontsize=8,
             fontweight="bold",
+            rotation=90,
+            clip_on=True,
         )
 
     for op in inst.ops:
