@@ -7,7 +7,9 @@ Searches gated-Tabu knobs plus light ALNS destroy-size params.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+from pathlib import Path
 
 from src.instance_gen import gen_instance
 from src.model import Instance
@@ -101,6 +103,71 @@ def load_alns_tabu_tune_instances(
     return select_stratified(base + extras, per_bucket=1, max_total=max_total)
 
 
+def _polish_cost(cfg: dict) -> float:
+    """Proxy cost for tie-breaking: cheaper Tabu preferred when gaps match."""
+    return (
+        float(cfg.get("local_search_budget_frac", 0.15))
+        * float(cfg.get("local_search_rate", 0.15))
+        * float(cfg.get("local_tabu_iters", 40))
+        * float(cfg.get("local_neighborhood_size", 20))
+    )
+
+
+def _prefer_cheaper_polish_on_ties(
+    output_dir: str | Path,
+    config_path: str | Path,
+    csv_filename: str = "alns_tabu_tuning.csv",
+    gap_eps: float = 1e-9,
+) -> dict:
+    """If several trials share the best mean_gap, keep the cheapest polish."""
+    csv_path = Path(output_dir) / csv_filename
+    out_config = Path(config_path)
+    if not csv_path.is_file():
+        with open(out_config, encoding="utf-8") as f:
+            return json.load(f)
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        with open(out_config, encoding="utf-8") as f:
+            return json.load(f)
+
+    best_gap = min(float(r["mean_gap"]) for r in rows)
+    tied = [r for r in rows if abs(float(r["mean_gap"]) - best_gap) <= gap_eps]
+
+    def row_as_cfg(row: dict) -> dict:
+        cfg: dict = {}
+        for k, v in row.items():
+            if k in ("trial", "mean_gap"):
+                continue
+            if v is None or v == "":
+                continue
+            try:
+                if k in _INT_PARAMS or k == "q_cap":
+                    cfg[k] = int(float(v))
+                else:
+                    fv = float(v)
+                    cfg[k] = int(fv) if fv.is_integer() and k in {
+                        "segment_length",
+                        "sigma1",
+                        "sigma2",
+                        "sigma3",
+                        "regret_k",
+                        "max_iterations",
+                        "tabu_tenure",
+                    } else fv
+            except ValueError:
+                cfg[k] = v
+        return _normalize_alns_tabu(cfg)
+
+    winner = min(tied, key=lambda r: _polish_cost(row_as_cfg(r)))
+    best_cfg = row_as_cfg(winner)
+    with open(out_config, "w", encoding="utf-8") as f:
+        json.dump(best_cfg, f, indent=2)
+        f.write("\n")
+    return best_cfg
+
+
 def tune(
     instances,
     n_configs: int = 40,
@@ -111,7 +178,7 @@ def tune(
     light: bool = False,
 ) -> dict:
     """Run random-search tuning for HybridALNSTabu. Returns best config."""
-    return run_random_search(
+    run_random_search(
         alns_tabu_tuner_spec(),
         instances,
         n_configs=n_configs,
@@ -121,6 +188,8 @@ def tune(
         config_path=config_path,
         light=light,
     )
+    return _prefer_cheaper_polish_on_ties(output_dir, config_path)
+
 
 
 def main() -> None:
