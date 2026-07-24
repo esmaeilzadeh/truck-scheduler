@@ -47,6 +47,25 @@ def _make_gantt_data(inst: Instance, sol: Solution) -> list[dict]:
     return rows
 
 
+# Fixed visual scale: long horizons scroll horizontally instead of shrinking.
+_GANTT_INCH_PER_PERIOD = 0.35
+_GANTT_INCH_PER_GATE = 0.7
+_GANTT_MIN_WIDTH_IN = 8.0
+_GANTT_MIN_HEIGHT_IN = 3.0
+
+_GANTT_SCROLL_CSS = """
+<style>
+div[data-testid="stPyplot"] {
+  overflow-x: auto;
+  width: 100%;
+}
+div[data-testid="stPyplot"] img {
+  max-width: none !important;
+}
+</style>
+"""
+
+
 def _plot_gantt(inst: Instance, sol: Solution):
     """Render a colorblind-safe Gantt chart using matplotlib."""
     import matplotlib
@@ -57,7 +76,9 @@ def _plot_gantt(inst: Instance, sol: Solution):
     gantt = _make_gantt_data(inst, sol)
     colors = {"delivery": "#0072B2", "pickup": "#E69F00"}
 
-    fig, ax = plt.subplots(figsize=(max(12, inst.T / 2), max(3, inst.G * 0.8)))
+    fig_w = max(_GANTT_MIN_WIDTH_IN, inst.T * _GANTT_INCH_PER_PERIOD)
+    fig_h = max(_GANTT_MIN_HEIGHT_IN, inst.G * _GANTT_INCH_PER_GATE)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
 
     for row in gantt:
         gate_idx = row["Gate"] - 1
@@ -110,7 +131,7 @@ def _plot_gantt(inst: Instance, sol: Solution):
     ax.legend(handles=patches, loc="upper right")
 
     plt.tight_layout()
-    st.pyplot(fig)
+    st.pyplot(fig, width="content")
     plt.close(fig)
 
 
@@ -280,6 +301,7 @@ def _poll_background_solve(inst: Instance, compare_all: bool) -> bool:
 
 def main():
     st.set_page_config(page_title="Truck Gate Scheduler", layout="wide")
+    st.markdown(_GANTT_SCROLL_CSS, unsafe_allow_html=True)
     st.title("Truck Gate Scheduling — Multi-Solver")
 
     policy = load_switch_policy()
