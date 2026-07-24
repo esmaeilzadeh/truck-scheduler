@@ -1,0 +1,32 @@
+---
+description: Implement plans on a clean separate branch with one commit per step
+alwaysApply: true
+---
+
+# Plan implementation workflow
+
+When implementing an approved plan (or any multi-step feature work derived from a plan):
+
+## Clean tree first
+
+- **Never start implementing** if the working tree has local modifications (staged or unstaged) or untracked files that would mix into the work.
+- If dirty: stop, report `git status`, and ask the user to commit, stash, or discard before continuing.
+- Exception: only ignore unrelated dirt when the user explicitly says to leave those paths alone and proceed.
+
+## Separate branch
+
+- Create and use a **new branch** for the plan (e.g. `cursor/<short-plan-name>`).
+- Do not implement the plan as a pile of uncommitted changes on `main` / the previous task’s branch unless the user explicitly names that branch as the base and intends to continue it.
+
+## Stepwise commits
+
+- Implement **one plan step at a time**.
+- **Commit after each step** with a focused message that matches that step.
+- Do not batch multiple plan steps into a single commit unless the user explicitly asks to squash or combine them.
+- Do not edit the plan file itself unless the user asks.
+
+## Before coding checklist
+
+1. `git status` — must be clean (or user-approved exceptions only).
+2. Create/checkout the plan branch from the agreed base.
+3. Execute steps in order; commit after each completed step.
