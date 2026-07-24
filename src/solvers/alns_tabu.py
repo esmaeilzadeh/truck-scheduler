@@ -31,6 +31,8 @@ DEFAULT_PARAMS: dict = {
     "local_neighborhood_size": 20,
     "tabu_tenure": 7,
     "swap_prob": 0.5,
+    # Cap cumulative Tabu wall-time as a fraction of time_limit_sec
+    "local_search_budget_frac": 0.15,
 }
 
 
@@ -116,6 +118,15 @@ class HybridALNSTabu:
         local_nhood = max(1, int(p["local_neighborhood_size"]))
         tenure = int(p["tabu_tenure"])
         swap_prob = float(p["swap_prob"])
+        polish_frac = max(
+            0.0, min(1.0, float(p.get("local_search_budget_frac", 0.15)))
+        )
+        if time_limit_sec is not None and time_limit_sec > 0:
+            polish_budget_total = polish_frac * float(time_limit_sec)
+            polish_remaining = polish_budget_total
+        else:
+            polish_budget_total = None
+            polish_remaining = float("inf")
 
         n_destroy = len(DESTROY_OPS)
         n_repair = len(REPAIR_OPS)
@@ -137,6 +148,7 @@ class HybridALNSTabu:
         max_iter = int(p["max_iterations"])
         iterations = 0
         local_searches = 0
+        local_search_time = 0.0
 
         for it in range(max_iter):
             if _deadline_hit(deadline):
@@ -191,9 +203,21 @@ class HybridALNSTabu:
                     obj_best = obj_new
                     best_order = cand.order()
 
-                # Gated Tabu polish: always on new best; else with local_search_rate
+                # Gated Tabu polish: always on new best; else with local_search_rate.
+                # Skip when cumulative polish wall-time budget is exhausted.
                 do_tabu = new_global_best or (rng.random() < local_rate)
-                if do_tabu and not _deadline_hit(deadline):
+                if (
+                    do_tabu
+                    and not _deadline_hit(deadline)
+                    and polish_remaining > 1e-12
+                ):
+                    polish_t0 = time.perf_counter()
+                    if polish_remaining < float("inf"):
+                        polish_deadline = polish_t0 + polish_remaining
+                        if deadline is not None:
+                            polish_deadline = min(deadline, polish_deadline)
+                    else:
+                        polish_deadline = deadline
                     polished, polished_obj, _ = improve_order(
                         inst,
                         cur_state.order(),
@@ -202,8 +226,12 @@ class HybridALNSTabu:
                         tabu_tenure=tenure,
                         swap_prob=swap_prob,
                         rng=rng,
-                        deadline=deadline,
+                        deadline=polish_deadline,
                     )
+                    spent = time.perf_counter() - polish_t0
+                    local_search_time += spent
+                    if polish_remaining < float("inf"):
+                        polish_remaining = max(0.0, polish_remaining - spent)
                     local_searches += 1
                     if polished_obj < obj_cur - 1e-12:
                         cur_state = _ScheduleState.from_order(inst, polished)
@@ -262,6 +290,8 @@ class HybridALNSTabu:
         sol.meta = {
             "iterations": iterations,
             "local_searches": local_searches,
+            "local_search_time_sec": local_search_time,
+            "local_search_budget_sec": polish_budget_total,
             "gap_pct": gap_pct,
         }
         return sol
