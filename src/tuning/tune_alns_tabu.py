@@ -9,20 +9,23 @@ from __future__ import annotations
 import argparse
 import json
 
+from src.instance_gen import gen_instance
+from src.model import Instance
 from src.solvers.alns_tabu import DEFAULT_PARAMS, HybridALNSTabu
 from src.tuning.random_search import (
     TunerSpec,
     load_tune_instances,
     run_random_search,
+    select_stratified,
 )
 
 PARAM_RANGES = {
-    "local_search_rate": (0.05, 0.40),
-    "local_tabu_iters": (15, 80),
-    "local_neighborhood_size": (10, 40),
+    "local_search_rate": (0.02, 0.20),
+    "local_tabu_iters": (5, 40),
+    "local_neighborhood_size": (8, 25),
     "tabu_tenure": (3, 15),
     "rho_max": (0.20, 0.35),
-    "q_cap": (0, 30),
+    "local_search_budget_frac": (0.05, 0.25),
 }
 
 LIGHT_PARAM_KEYS = (
@@ -30,14 +33,13 @@ LIGHT_PARAM_KEYS = (
     "local_tabu_iters",
     "local_neighborhood_size",
     "rho_max",
-    "q_cap",
+    "local_search_budget_frac",
 )
 
 _INT_PARAMS = {
     "local_tabu_iters",
     "local_neighborhood_size",
     "tabu_tenure",
-    "q_cap",
 }
 
 _FROZEN_KEYS = (
@@ -54,6 +56,7 @@ _FROZEN_KEYS = (
     "d_wr",
     "max_iterations",
     "swap_prob",
+    "q_cap",  # keep destroy uncapped (aligned with pure ALNS)
 )
 
 
@@ -62,6 +65,9 @@ def _normalize_alns_tabu(cfg: dict) -> dict:
     rho_max = float(cfg.get("rho_max", DEFAULT_PARAMS["rho_max"]))
     if rho_min > rho_max:
         cfg["rho_min"], cfg["rho_max"] = rho_max, rho_min
+    cfg["q_cap"] = 0
+    frac = float(cfg.get("local_search_budget_frac", 0.15))
+    cfg["local_search_budget_frac"] = max(0.0, min(1.0, frac))
     return cfg
 
 
@@ -78,6 +84,21 @@ def alns_tabu_tuner_spec() -> TunerSpec:
         csv_filename="alns_tabu_tuning.csv",
         config_path="config/alns_tabu_params.json",
     )
+
+
+def load_alns_tabu_tune_instances(
+    max_total: int = 8,
+    include_large: bool = True,
+) -> list[Instance]:
+    """TUNE set plus medium/large generated instances (50x50, 100x100)."""
+    base = load_tune_instances(max_total=max_total * 2, include_large=include_large)
+    extras: list[Instance] = []
+    if include_large:
+        for seed, (M, N, G) in ((0, (50, 50, 2)), (0, (100, 100, 2))):
+            inst = gen_instance(seed=seed, M=M, N=N, G=G)
+            inst.id = f"TUNE_extra_s{seed}_M{M}_N{N}_G{G}"
+            extras.append(inst)
+    return select_stratified(base + extras, per_bucket=1, max_total=max_total)
 
 
 def tune(
@@ -118,14 +139,14 @@ def main() -> None:
         action="store_true",
         help=(
             "Vary local_search_rate, local_tabu_iters, "
-            "local_neighborhood_size, rho_max, q_cap"
+            "local_neighborhood_size, rho_max, local_search_budget_frac"
         ),
     )
     parser.add_argument("--output-dir", default="data/results")
     parser.add_argument("--config-path", default="config/alns_tabu_params.json")
     args = parser.parse_args()
 
-    instances = load_tune_instances(
+    instances = load_alns_tabu_tune_instances(
         max_total=args.max_instances,
         include_large=not args.no_large,
     )
