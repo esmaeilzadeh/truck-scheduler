@@ -29,6 +29,9 @@ def test_sample_config_alns_and_hybrids():
     assert "local_search_rate" in at_cfg
     assert "local_tabu_iters" in at_cfg
     assert "rho_max" in at_cfg
+    assert "local_search_budget_frac" in at_cfg
+    assert at_cfg["q_cap"] == 0
+    assert 0.05 <= at_cfg["local_search_budget_frac"] <= 0.25
 
 
 def test_ga_tabu_tune_smoke(tmp_path):
@@ -68,6 +71,8 @@ def test_alns_tabu_tune_smoke(tmp_path):
     assert (out / "alns_tabu_tuning.csv").is_file()
     assert "local_search_rate" in best
     assert "q_cap" in best
+    assert best["q_cap"] == 0
+    assert "local_search_budget_frac" in best
 
 
 def test_load_tune_instances_nonempty():
