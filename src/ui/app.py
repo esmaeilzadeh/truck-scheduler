@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import sys
 import threading
@@ -47,23 +49,13 @@ def _make_gantt_data(inst: Instance, sol: Solution) -> list[dict]:
     return rows
 
 
-# Fixed visual scale: long horizons scroll horizontally instead of shrinking.
-_GANTT_INCH_PER_PERIOD = 0.35
-_GANTT_INCH_PER_GATE = 0.7
-_GANTT_MIN_WIDTH_IN = 8.0
-_GANTT_MIN_HEIGHT_IN = 3.0
-
-_GANTT_SCROLL_CSS = """
-<style>
-div[data-testid="stPyplot"] {
-  overflow-x: auto;
-  width: 100%;
-}
-div[data-testid="stPyplot"] img {
-  max-width: none !important;
-}
-</style>
-"""
+# Fixed-height viewport: long horizons scroll horizontally instead of shrinking.
+_GANTT_PX_PER_PERIOD = 18
+_GANTT_PX_PER_GATE = 90
+_GANTT_MIN_WIDTH_PX = 720
+_GANTT_MIN_HEIGHT_PX = 320
+_GANTT_MAX_WIDTH_PX = 12000
+_GANTT_DPI = 100
 
 
 def _plot_gantt(inst: Instance, sol: Solution):
@@ -76,9 +68,12 @@ def _plot_gantt(inst: Instance, sol: Solution):
     gantt = _make_gantt_data(inst, sol)
     colors = {"delivery": "#0072B2", "pickup": "#E69F00"}
 
-    fig_w = max(_GANTT_MIN_WIDTH_IN, inst.T * _GANTT_INCH_PER_PERIOD)
-    fig_h = max(_GANTT_MIN_HEIGHT_IN, inst.G * _GANTT_INCH_PER_GATE)
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    height_px = max(_GANTT_MIN_HEIGHT_PX, inst.G * _GANTT_PX_PER_GATE + 80)
+    width_px = max(_GANTT_MIN_WIDTH_PX, inst.T * _GANTT_PX_PER_PERIOD + 120)
+    width_px = min(width_px, _GANTT_MAX_WIDTH_PX)
+    fig_w = width_px / _GANTT_DPI
+    fig_h = height_px / _GANTT_DPI
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=_GANTT_DPI)
 
     for row in gantt:
         gate_idx = row["Gate"] - 1
@@ -131,8 +126,17 @@ def _plot_gantt(inst: Instance, sol: Solution):
     ax.legend(handles=patches, loc="upper right")
 
     plt.tight_layout()
-    st.pyplot(fig, width="content")
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=_GANTT_DPI, bbox_inches="tight")
     plt.close(fig)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    st.markdown(
+        f'<div style="overflow-x:auto;width:100%;border:1px solid #ddd;">'
+        f'<img src="data:image/png;base64,{b64}" '
+        f'style="height:{height_px}px;width:auto;max-width:none;display:block;" />'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _start_background_solve(
@@ -301,7 +305,6 @@ def _poll_background_solve(inst: Instance, compare_all: bool) -> bool:
 
 def main():
     st.set_page_config(page_title="Truck Gate Scheduler", layout="wide")
-    st.markdown(_GANTT_SCROLL_CSS, unsafe_allow_html=True)
     st.title("Truck Gate Scheduling — Multi-Solver")
 
     policy = load_switch_policy()
